@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- Real-browser acceptance harness: loads the game (default "/", or ?page=...) in a
+     same-origin iframe, plays each scenario by clicking the real DOM buttons, and writes
+     JSON results into <pre id="result"> for browser_check.py (headless --dump-dom). -->
+<html lang="en">
+<head><meta charset="utf-8"><title>tic-tac-toe browser check</title></head>
+<body>
+<pre id="result">PENDING</pre>
+<iframe id="f" style="width:600px;height:600px"></iframe>
+<script>
+const page = new URLSearchParams(location.search).get("page") || "/";
+const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const frame = document.getElementById("f");
+function fresh() {
+  return new Promise((resolve) => {
+    frame.onload = () => resolve(frame.contentDocument);
+    frame.src = page + (page.includes("?") ? "&" : "?") + "t=" + Math.random();
+  });
+}
+const results = [];
+async function scenario(name, fn) {
+  const d = await fresh();
+  const errors = [];
+  frame.contentWindow.addEventListener("error", (e) => errors.push(String(e.message)));
+  const cell = (i) => d.getElementById("cell-" + i);
+  const g = {
+    click: (i) => cell(i).click(),
+    mark: (i) => cell(i).textContent.trim(),
+    board: () => [0,1,2,3,4,5,6,7,8].map((i) => cell(i).textContent.trim()),
+    status: () => d.getElementById("status").textContent.trim(),
+    restart: () => d.getElementById("restart").click(),
+    play(xs, os) { for (let i = 0; i < Math.max(xs.length, os.length); i++) { if (i < xs.length) g.click(xs[i]); if (i < os.length) g.click(os[i]); } },
+  };
+  try { const why = fn(g); results.push({ name, ok: why === true && errors.length === 0, detail: why === true ? errors.join("; ") : why }); }
+  catch (e) { results.push({ name, ok: false, detail: String(e) }); }
+}
+const says = (s, w) => new RegExp("\\b" + w + "\\b").test(s);
+(async () => {
+  await scenario("X first, turns alternate", (g) => { g.click(0); g.click(4); return g.mark(0) === "X" && g.mark(4) === "O" && says(g.status(), "X") || `board=${g.board()} status=${g.status()}`; });
+  await scenario("occupied square rejected", (g) => { g.click(0); g.click(0); g.click(1); return g.mark(0) === "X" && g.mark(1) === "O" || `board=${g.board()}`; });
+  for (const line of LINES) {
+    await scenario("X wins " + line.join("-"), (g) => {
+      const others = [0,1,2,3,4,5,6,7,8].filter((i) => !line.includes(i));
+      g.play(line, others.slice(0, 2));
+      const won = says(g.status(), "X") && /win/i.test(g.status());
+      const before = g.board().join(","); for (const i of others.slice(2)) g.click(i);
+      return won && g.board().join(",") === before || `status=${g.status()} board=${g.board()}`;
+    });
+  }
+  await scenario("O wins", (g) => { g.play([0,1,8],[3,4,5]); return says(g.status(), "O") && /win/i.test(g.status()) || g.status(); });
+  await scenario("draw", (g) => { g.play([0,2,3,7,8],[1,4,5,6]); return /draw/i.test(g.status()) && !/win/i.test(g.status()) || g.status(); });
+  await scenario("restart after win", (g) => { g.play([0,1,2],[3,4]); g.restart(); const empty = g.board().every((v) => v === ""); g.click(5); return empty && g.mark(5) === "X" || `board=${g.board()}`; });
+  document.getElementById("result").textContent = JSON.stringify({ page, userAgent: navigator.userAgent, results });
+})();
+</script>
+</body>
+</html>

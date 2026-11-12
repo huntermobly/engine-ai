@@ -97,6 +97,18 @@ def _contains(parent: str, child: str) -> bool:
 
 
 class Sessions:
+    def close(self) -> None:
+        try:
+            self.db.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __init__(self, db_path: str | None = None):
         os.makedirs(HOME, exist_ok=True)
         self.db = sqlite3.connect(db_path or os.path.join(HOME, "sessions.db"),
@@ -209,7 +221,8 @@ class Sessions:
         self.db.commit()
         kw = json.loads(r["keywords"])
         try:
-            context = Memory().context(kw)
+            with Memory() as m:
+                context = m.context(kw)
         except Exception:  # noqa: BLE001
             context = ""
         out = {"ok": True, "id": r["id"], "slug": r["slug"], "name": r["name"], "path": r["path"],

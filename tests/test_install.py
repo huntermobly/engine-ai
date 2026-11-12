@@ -5,6 +5,16 @@ import subprocess
 import tempfile
 import unittest
 
+
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -37,17 +47,17 @@ class TestInstaller(unittest.TestCase):
         self.assertTrue(os.path.islink(os.path.join(cdir, "skills", "deployable-app")))
         self.assertTrue(os.path.islink(os.path.join(cdir, "commands", "new-app.md")))
         # settings.json has our hook and is valid JSON
-        cfg = json.load(open(os.path.join(cdir, "settings.json")))
+        cfg = json.loads(_read(os.path.join(cdir, "settings.json")))
         cmds = [h["command"] for g in cfg["hooks"]["SessionStart"] for h in g["hooks"]]
         self.assertTrue(any("session-start.sh" in c for c in cmds))
         # MCP registered via the stub
-        log = open(self.log).read()
+        log = _read(self.log)
         self.assertIn("mcp add", log)
         self.assertIn("engine-ai", log)
 
     def test_idempotent(self):
         self._run(); self._run()  # twice
-        cfg = json.load(open(os.path.join(self.env["CLAUDE_CONFIG_DIR"], "settings.json")))
+        cfg = json.loads(_read(os.path.join(self.env["CLAUDE_CONFIG_DIR"], "settings.json")))
         cmds = [h["command"] for g in cfg["hooks"]["SessionStart"] for h in g["hooks"]
                 if "session-start.sh" in h["command"]]
         self.assertEqual(len(cmds), 1)  # not duplicated
@@ -55,11 +65,11 @@ class TestInstaller(unittest.TestCase):
     def test_preserves_existing_settings(self):
         cdir = self.env["CLAUDE_CONFIG_DIR"]
         os.makedirs(cdir, exist_ok=True)
-        json.dump({"editor": {"theme": "dark"}, "hooks": {"SessionStart": [
-            {"hooks": [{"type": "command", "command": "echo existing"}]}]}},
-            open(os.path.join(cdir, "settings.json"), "w"))
+        _writefile(os.path.join(cdir, "settings.json"), json.dumps(
+            {"editor": {"theme": "dark"}, "hooks": {"SessionStart": [
+                {"hooks": [{"type": "command", "command": "echo existing"}]}]}}))
         self._run()
-        cfg = json.load(open(os.path.join(cdir, "settings.json")))
+        cfg = json.loads(_read(os.path.join(cdir, "settings.json")))
         self.assertEqual(cfg["editor"]["theme"], "dark")  # untouched
         cmds = [h["command"] for g in cfg["hooks"]["SessionStart"] for h in g["hooks"]]
         self.assertIn("echo existing", cmds)              # existing hook kept
@@ -71,10 +81,10 @@ class TestInstaller(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         cdir = self.env["CLAUDE_CONFIG_DIR"]
         self.assertFalse(os.path.exists(os.path.join(cdir, "skills", "deployable-app")))
-        cfg = json.load(open(os.path.join(cdir, "settings.json")))
+        cfg = json.loads(_read(os.path.join(cdir, "settings.json")))
         cmds = [h["command"] for g in cfg.get("hooks", {}).get("SessionStart", []) for h in g["hooks"]]
         self.assertFalse(any("session-start.sh" in c for c in cmds))
-        self.assertIn("mcp remove", open(self.log).read())
+        self.assertIn("mcp remove", _read(self.log))
 
     def test_fails_without_claude(self):
         env = {**self.env, "PATH": "/usr/bin:/bin"}  # no stub claude

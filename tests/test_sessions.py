@@ -9,6 +9,16 @@ os.environ["ENGINE_AI_HOME"] = tempfile.mkdtemp()  # isolate before importing
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp"))
 from sessions import Sessions, _slug  # noqa: E402
 
+
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
 HAS_GIT = subprocess.run(["bash", "-c", "command -v git"], capture_output=True).returncode == 0
 
 
@@ -21,6 +31,7 @@ class TestSlug(unittest.TestCase):
 class TestSessions(unittest.TestCase):
     def setUp(self):
         self.s = Sessions(db_path=os.path.join(tempfile.mkdtemp(), "s.db"))
+        self.addCleanup(self.s.close)
 
     @unittest.skipUnless(HAS_GIT, "git not available")
     def test_create_worktree(self):
@@ -41,7 +52,7 @@ class TestSessions(unittest.TestCase):
         self.assertNotEqual(a["path"], b["path"])
         self.assertNotEqual(a["branch"], b["branch"])
         # writing in one doesn't touch the other
-        open(os.path.join(a["path"], "a.txt"), "w").write("A")
+        _writefile(os.path.join(a["path"], "a.txt"), "A", "w")
         self.assertFalse(os.path.exists(os.path.join(b["path"], "a.txt")))
 
     @unittest.skipUnless(HAS_GIT, "git not available")
@@ -65,7 +76,8 @@ class TestSessions(unittest.TestCase):
     def test_resume_returns_path_and_memory(self):
         # save a memory pocket under the app's keywords first
         from memory import Memory
-        Memory().save(["billing", "stripe"], "Stripe checkout wired.", {"provider": "stripe"})
+        with Memory() as m:
+            m.save(["billing", "stripe"], "Stripe checkout wired.", {"provider": "stripe"})
         r = self.s.create("Billing App", keywords=["billing", "stripe"])
         res = self.s.resume(r["slug"])
         self.assertTrue(res["ok"])

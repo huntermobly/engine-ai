@@ -74,6 +74,7 @@ class ProviderError(Exception):
     NETWORK = "network"          # timeouts, connection resets — retryable
     SERVER = "server"            # 5xx — retryable
     INVALID_OUTPUT = "invalid_output"  # schema-violating model response — no blind retry
+    PAID_REFUSED = "paid_refused"  # free-only routing met a paid model/charge — stop
 
     def __init__(self, kind: str, message: str, retry_after: float | None = None,
                  status: int | None = None):
@@ -86,6 +87,12 @@ class ProviderError(Exception):
     @property
     def retryable(self) -> bool:
         return self.kind in (ProviderError.RATE_LIMIT, ProviderError.NETWORK, ProviderError.SERVER)
+
+
+def is_free_model(model_id: str) -> bool:
+    """OpenRouter's free routes carry the `:free` suffix (or are the free router)."""
+    m = str(model_id or "")
+    return m.endswith(":free") or m == "openrouter/free"
 
 
 class Provider(ABC):

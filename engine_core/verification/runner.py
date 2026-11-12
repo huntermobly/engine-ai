@@ -39,6 +39,11 @@ class VerificationError(RuntimeError):
 class Verifier:
     timeout_per_command: int = 300
     max_build_processes: int = 1
+    # sandbox=True: commands are MODEL-CHOSEN (planner verification) → run inside the
+    # bubblewrap sandbox with no persistent writable path; when the sandbox is
+    # unavailable they are refused (a failed check), never run unconfined.
+    sandbox: bool = False
+    hidden_paths: list = field(default_factory=list)
 
     def _resolve(self, workspace: str, argv: list[str]) -> list[str]:
         """Interpret planner-specified commands: a bare relative `script.py` (etc.) means
@@ -66,8 +71,17 @@ class Verifier:
             argv = self._resolve(workspace, raw)
             name = " ".join(argv[:2])[:80]
             t0 = time.time()
+            run_argv = argv
+            if self.sandbox:
+                from engine_core.tools import sandbox as sb
+                if not sb.available():
+                    results.append(CheckResult(name, argv, None, 0.0,
+                                               "refused: model-chosen verification commands need the "
+                                               "bubblewrap sandbox (install bubblewrap)"))
+                    continue
+                run_argv = sb.wrap(argv, workspace=workspace, writable=[], hidden=self.hidden_paths)
             try:
-                p = subprocess.run(argv, cwd=workspace, capture_output=True, text=True,
+                p = subprocess.run(run_argv, cwd=workspace, capture_output=True, text=True,
                                    timeout=self.timeout_per_command, stdin=subprocess.DEVNULL)
                 results.append(CheckResult(name, argv, p.returncode,
                                            round(time.time() - t0, 2), (p.stdout + p.stderr)[-2000:]))
@@ -77,6 +91,6 @@ class Verifier:
             except OSError as e:  # not installed / not executable — a failed check, not a crash
                 results.append(CheckResult(name, argv, None, round(time.time() - t0, 2),
                                            f"{argv[0]}: cannot execute ({e.__class__.__name__})"))
-        return {"commit": commit, "workspace": workspace,
+        return {"commit": commit, "workspace": workspace, "sandboxed": self.sandbox,
                 "checks": [r.to_dict() for r in results],
                 "passed": bool(results) and all(r.passed for r in results)}

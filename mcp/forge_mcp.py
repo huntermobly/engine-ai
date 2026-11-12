@@ -56,11 +56,27 @@ def _version() -> str:
         return "0.0.0"
 
 ENGINE = Engine()
+try:
+    ENGINE.sync_bundled_skills()  # list_skills/get_skill must work on a fresh install
+except Exception:  # noqa: BLE001 — never block server startup on the skill registry
+    pass
 MEM = Memory()
 SESS = Sessions()
 KN = Knowledge()
 WS = WebSearch(get_secret=ENGINE.get_secret)
 SO = StackOverflowClient(get_secret=ENGINE.get_secret)
+
+
+def _close_stores() -> None:
+    for store in (ENGINE, MEM, SESS, KN):
+        try:
+            store.close()
+        except Exception:  # noqa: BLE001 — best effort at shutdown
+            pass
+
+
+import atexit  # noqa: E402
+atexit.register(_close_stores)  # flush + close the server's SQLite stores on exit
 
 # ----------------------------------------------------------- tool registry
 TOOLS: list[dict] = []
@@ -135,7 +151,8 @@ def _deploy_verify(a):
 
 
 @tool("scaffold_app", "Write a minimal but genuinely deployable app skeleton (healthcheck + tests + Dockerfile + CI). kind: node-api | python-api | static. REFUSES to overwrite existing files unless replace=true (originals kept as *.engine-ai.bak); dry_run=true previews.",
-      _obj({"path": {"type": "string"}, "kind": {"type": "string"},
+      _obj({"path": {"type": "string"},
+            "kind": {"type": "string", "enum": ["node-api", "python-api", "static"]},
             "replace": {"type": "boolean"}, "dry_run": {"type": "boolean"}}, ["path", "kind"]))
 def _scaffold_app(a):
     return scaffold(os.path.abspath(a["path"]), a["kind"],
@@ -263,7 +280,7 @@ def _suggest_experts(a):
     return _experts.suggest(a["request"], k=int(a.get("k", 3)), knowledge=KN)
 
 
-@tool("web_search", "Live web search for current, real-time information the offline knowledge store can't have (recent releases, current docs/pricing, breaking changes, news). Uses Brave Search if a BRAVE_API_KEY secret is set (set_secret), else falls back to DuckDuckGo — no key required either way. Returns title/url/snippet hits.",
+@tool("web_search", "Live web search for current, real-time information the offline knowledge store can't have (recent releases, current docs/pricing, breaking changes, news). Uses Brave Search if a BRAVE_API_KEY secret is set (set_secret), else falls back to DuckDuckGo (no key, but DuckDuckGo often bot-checks automated clients — then this returns an error asking for a Brave key rather than an empty result). Returns title/url/snippet hits.",
       _obj({"query": {"type": "string"}, "k": {"type": "integer"}}, ["query"]))
 def _web_search(a):
     return {"hits": WS.search(a["query"], k=int(a.get("k", 5))), "provider": WS.status()["active_provider"]}
@@ -306,7 +323,41 @@ def _openrouter_import(a):
                                          get_secret=ENGINE.get_secret)
 
 
-@tool("codex_setup", "Generate Codex CLI config (~/.codex/config.toml) from the configured engine profiles: one OpenRouter model_provider + profile selector per agent key/model, plus a chmod-600 env file with the key exports. NEVER touches ~/.codex/auth.json (your OpenAI login is preserved); existing config.toml content outside the engine-ai block is kept, with a backup. Run openrouter_setup first — needs at least one configured profile.",
+@tool("engine_info", "Report which engine-ai source tree THIS server process loaded (source_dir, git commit, version, pid, engine home, shell sandbox, provider mode). Use it to confirm the client is connected to the code you expect.",
+      _obj({}))
+def _engine_info(a):
+    from engine_core.mcp_build import engine_info
+    return engine_info(HOME)
+
+
+@tool("engine_build_start", "Start an engine-ai MULTI-AGENT build in the background and return a run_id at once: the planner agent splits the objective into tasks (contract, implementation, tests, review…), each task runs under its own profile's key+model, dependents receive the contract/artifacts, and every task is verified (artifacts on disk + sandboxed verification commands). Uses a FRESH workspace per run unless `workspace` is given. Engine provider calls are billed to the engine's OpenRouter profiles (free-only by default), not to this assistant. Monitor with engine_build_status.",
+      _obj({"objective": {"type": "string"}, "workspace": {"type": "string"},
+            "project": {"type": "string"}, "max_tasks": {"type": "integer"},
+            "config": {"type": "string"}}, ["objective"]))
+def _engine_build_start(a):
+    from engine_core.mcp_build import start_build
+    return start_build(HOME, a["objective"], workspace=a.get("workspace"), project=a.get("project"),
+                       max_tasks=int(a.get("max_tasks") or 6), config=a.get("config"))
+
+
+@tool("engine_build_status", "Status of an engine build: state (running/complete/failed/blocked/crashed), per-task states, recent progress events, and — when finished — the report (task ids, dependencies, profiles, models, artifacts, verification results, attempts, engine provider usage). Pass run_id (or workspace). wait_s (<=45, below the clients' default tool timeouts) waits for a terminal state.",
+      _obj({"run_id": {"type": "string"}, "workspace": {"type": "string"},
+            "wait_s": {"type": "integer"}}, []))
+def _engine_build_status(a):
+    from engine_core.mcp_build import build_status, wait_status
+    if a.get("run_id") and a.get("wait_s"):
+        return wait_status(HOME, a["run_id"], wait_s=a["wait_s"])
+    return build_status(HOME, run_id=a.get("run_id"), workspace=a.get("workspace"))
+
+
+@tool("engine_build_resume", "Resume/retry an engine build in the background from its STORED plan (no re-planning): finished tasks whose spec, artifacts and dependency evidence are unchanged are kept; failed, blocked, not-run or invalidated tasks run again. Returns a new run_id.",
+      _obj({"workspace": {"type": "string"}, "config": {"type": "string"}}, ["workspace"]))
+def _engine_build_resume(a):
+    from engine_core.mcp_build import start_build
+    return start_build(HOME, workspace=a["workspace"], config=a.get("config"), resume=True)
+
+
+@tool("codex_setup", "Generate Codex CLI config (~/.codex/config.toml) from the configured engine profiles: one OpenRouter model_provider + profile selector per agent key/model. Keys stay in the encrypted vault: load them into a shell with `eval \"$(engine-ai runtime codex-env)\"` (nothing written to disk); write_env=true ALSO writes a chmod-600 plaintext ~/.codex/engine-ai-env.sh (opt-in). NEVER touches ~/.codex/auth.json (your OpenAI login is preserved); existing config.toml content outside the engine-ai block is kept, with a backup. Run openrouter_setup first — needs at least one configured profile.",
       _obj({"codex_dir": {"type": "string"}, "active": {"type": "string"},
             "write_env": {"type": "boolean"}}, []))
 def _codex_setup(a):
@@ -332,7 +383,7 @@ def _codex_setup(a):
         resolved.append({**r, "model": model})
     codex_dir = a.get("codex_dir") or os.path.join(os.path.expanduser("~"), ".codex")
     out = codex_config.write_config(codex_dir, resolved, active=a.get("active"))
-    if a.get("write_env", True):
+    if a.get("write_env", False):  # opt-in: the ONLY plaintext copy of the keys
         keys = {}
         for r in resolved:
             ref = r.get("credential_ref") or ""
@@ -343,9 +394,9 @@ def _codex_setup(a):
         if keys:
             out["env"] = codex_config.write_env_file(codex_dir, keys)
     out["auth_json"] = "NOT modified (your OpenAI login is preserved)"
-    out["next"] = ("source ~/.codex/engine-ai-env.sh (or add it to your shell profile), "
-                   "then: codex --profile engine_" +
-                   (a.get("active") or resolved[0]["profile"]).replace("-", "_"))
+    load = ("source " + out["env"]["env_file"]) if out.get("env") else 'eval "$(engine-ai runtime codex-env)"'
+    out["next"] = (f"{load}   (exports the OPENROUTER_*_KEY vars for this shell), then: "
+                   "codex --profile engine_" + (a.get("active") or resolved[0]["profile"]).replace("-", "_"))
     return out
 
 
@@ -386,6 +437,15 @@ def _autoload_keys():
         pass
 
 
+# tools that never change state: MCP `readOnlyHint` lets clients (Codex "writes" approval
+# mode, Claude Code permission prompts) auto-allow them while still gating the rest
+READ_ONLY_TOOLS = {"engine_info", "engine_build_status", "search_repo", "list_skills", "get_skill",
+                   "list_secrets", "deploy_readiness", "memory_recall", "memory_get", "memory_list",
+                   "memory_context", "app_list", "app_find", "knowledge_search", "knowledge_domains",
+                   "context_pack", "suggest_experts", "web_search_status", "responsive_audit",
+                   "openrouter_setup"}
+
+
 # ----------------------------------------------------------- request validation
 _TYPES = {"string": str, "integer": int, "boolean": bool, "object": dict,
           "array": list, "number": (int, float)}
@@ -415,6 +475,8 @@ def _validate_args(name: str, args) -> str | None:
             return f"{key} must be an integer"
         if py and not isinstance(val, py):
             return f"{key} must be {want}"
+        if "enum" in spec and val not in spec["enum"]:
+            return f"{key} must be one of: {' | '.join(map(str, spec['enum']))}"
     return None
 
 
@@ -449,7 +511,9 @@ def handle(msg) -> dict | None:
     if method == "ping":
         return _result(id_, {})
     if method == "tools/list":
-        return _result(id_, {"tools": TOOLS})
+        return _result(id_, {"tools": [
+            {**t, "annotations": {"readOnlyHint": True}} if t["name"] in READ_ONLY_TOOLS else t
+            for t in TOOLS]})
     if method == "tools/call":
         params = msg.get("params") or {}
         name = params.get("name")

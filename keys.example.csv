@@ -1,0 +1,10 @@
+# engine-ai agent keys — copy to ~/.engine-ai/keys.csv (git-ignored as keys.csv) and fill in
+# your own values; never commit the real file. One line per profile: profile,key,model
+# Free routes end in ":free" (free-only routing refuses anything else unless you set
+# routing.free_only: false in your engine config).
+profile,key,model
+planner,sk-or-v1-REPLACE_WITH_YOUR_KEY,nvidia/nemotron-3.5-super-vl:free
+frontend,sk-or-v1-REPLACE_WITH_YOUR_KEY,nvidia/nemotron-3.5-super-vl:free
+test-author,sk-or-v1-REPLACE_WITH_YOUR_KEY,nvidia/nemotron-3.5-super-vl:free
+reviewer,sk-or-v1-REPLACE_WITH_YOUR_KEY,nvidia/nemotron-3.5-super-vl:free
+documentation,sk-or-v1-REPLACE_WITH_YOUR_KEY,nvidia/nemotron-3.5-super-vl:free

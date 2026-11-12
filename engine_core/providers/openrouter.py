@@ -2,8 +2,12 @@
 
 - Credentials resolve from `credential_ref` (env:NAME) at call time and appear in NO
   error message, log, or telemetry (errors carry the masked ref at most).
-- 429 → ProviderError(RATE_LIMIT) carrying Retry-After; 401/403 → AUTH (stop, never
-  rotate); 402 → QUOTA (pause); 5xx/timeouts → retryable.
+- 429 → ProviderError(RATE_LIMIT) carrying Retry-After; BUT a 429 for a DAILY limit
+  (OpenRouter's "free-models-per-day") is QUOTA — retrying it within the run only
+  burns time, and moving to another key would be account rotation; 401/403 → AUTH
+  (stop, never rotate); 402 → QUOTA (pause); 5xx/timeouts → retryable.
+- free_only=True: a non-`:free` model id is refused BEFORE any request, and a response
+  that reports a non-zero cost stops the run (QUOTA) instead of being accepted.
 - Every request goes through the per-account-group RateLimiter; the limiter is paused
   on Retry-After so ALL workers in the group back off, not just the caller.
 - Usage (incl. cached/reasoning tokens when reported) is attached to every completion.
@@ -16,10 +20,12 @@ import time
 import urllib.error
 import urllib.request
 
-from engine_core.providers.base import (Completion, Message, Provider, ProviderError, Usage)
+from engine_core.providers.base import (Completion, Message, Provider, ProviderError, Usage,
+                                        is_free_model)
 from engine_core.providers.limiter import RateLimiter, backoff
 
 API_BASE = "https://openrouter.ai/api/v1"
+DAILY_QUOTA_MARKERS = ("per-day", "per day", "requests per day", "daily")
 
 
 def _mask(ref: str | None) -> str:
@@ -34,7 +40,7 @@ class OpenRouterProvider(Provider):
     def __init__(self, api_key: str | None = None, credential_ref: str | None = None,
                  base_url: str = API_BASE, limiter: RateLimiter | None = None,
                  account_group: str = "default", timeout: int = 120,
-                 max_retries: int = 3, transport=None):
+                 max_retries: int = 3, transport=None, free_only: bool = False):
         self._api_key = api_key
         self.credential_ref = credential_ref
         self.base_url = base_url.rstrip("/")
@@ -42,6 +48,7 @@ class OpenRouterProvider(Provider):
         self.account_group = account_group
         self.timeout = timeout
         self.max_retries = max_retries
+        self.free_only = free_only
         # transport(url, body_dict, headers, timeout) -> (status, body_dict) — injectable
         # for tests; defaults to urllib so production has no extra deps.
         self._transport = transport or self._urllib_transport
@@ -66,6 +73,9 @@ class OpenRouterProvider(Provider):
                 payload = json.loads(e.read().decode("utf-8"))
             except Exception:  # noqa: BLE001
                 payload = {"error": {"message": str(e)}}
+            ra = e.headers.get("Retry-After") if e.headers else None
+            if ra and isinstance(payload, dict):
+                payload.setdefault("retry_after", ra)  # header → body (single code path)
             return e.code, payload
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
             raise ProviderError(ProviderError.NETWORK, f"transport failure: {e.__class__.__name__}") from e
@@ -100,6 +110,9 @@ class OpenRouterProvider(Provider):
                     return payload
                 err = payload.get("error") or {}
                 msg = str(err.get("message") or payload)[:500]
+                if status == 429 and any(m in msg.lower() for m in DAILY_QUOTA_MARKERS):
+                    raise ProviderError(ProviderError.QUOTA,
+                                        f"daily quota exhausted for this key: {msg}", status=429)
                 if status == 429:
                     retry_after = self._retry_after(err, payload)
                     self.limiter.pause(self.account_group, retry_after or backoff(attempt))
@@ -119,7 +132,9 @@ class OpenRouterProvider(Provider):
                 continue
             if last_error is not None:
                 raise last_error
-        raise last_error or ProviderError(ProviderError.SERVER, "request failed")
+        raise last_error or ProviderError(
+            ProviderError.RATE_LIMIT, f"local rate limiter for group {self.account_group!r} "
+                                      f"did not free a slot after {self.max_retries} waits")
 
     @staticmethod
     def _retry_after(err: dict, payload: dict) -> float | None:
@@ -152,6 +167,9 @@ class OpenRouterProvider(Provider):
 
     def complete(self, model: str, messages: list[Message], *, tools: list[dict] | None = None,
                  max_output_tokens: int | None = None, temperature: float | None = None) -> Completion:
+        if self.free_only and not is_free_model(model):
+            raise ProviderError(ProviderError.PAID_REFUSED,
+                                f"model {model!r} is not a free route and routing is free-only")
         body: dict = {"model": model, "messages": self._wire_messages(messages)}
         if tools:
             body["tools"] = tools
@@ -172,6 +190,10 @@ class OpenRouterProvider(Provider):
             cached_tokens=int((usage_raw.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0),
             cost_usd=float(usage_raw.get("cost", 0) or 0),
         )
+        if self.free_only and usage.cost_usd > 0:
+            raise ProviderError(ProviderError.QUOTA,
+                                f"free-only run was charged ${usage.cost_usd:.6f} by "
+                                f"{payload.get('model', model)!r} — stopping (no paid fallback)")
         return Completion(
             content=str(msg.get("content") or ""),
             model=str(payload.get("model", model)),

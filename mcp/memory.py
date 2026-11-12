@@ -68,6 +68,18 @@ def _jaccard(a: list[str], b: list[str]) -> float:
 
 
 class Memory:
+    def close(self) -> None:
+        try:
+            self.db.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __init__(self, db_path: str | None = None):
         os.makedirs(HOME, exist_ok=True)
         self.db = sqlite3.connect(db_path or os.path.join(HOME, "memory.db"),

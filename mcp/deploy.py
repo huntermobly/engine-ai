@@ -50,6 +50,8 @@ def detect_stack(root: str) -> str:
         return "go"
     if _exists(root, "Cargo.toml"):
         return "rust"
+    if _exists(root, "index.html"):
+        return "static"  # plain HTML site: nothing to start, served as files
     return "unknown"
 
 
@@ -108,8 +110,8 @@ def detect_test_framework(root: str, stack: str, scripts: dict) -> str | None:
     """Name the test framework the project itself declares/uses (None if none found)."""
     if _exists(root, "pytest.ini") or _exists(root, "tox.ini"):
         return "pytest"
-    pyproject = _read_json(os.path.join(root, "pyproject.toml"))
-    if isinstance(pyproject, dict) and "pytest" in (pyproject.get("tool") or {}):
+    pyproject = _read_toml(os.path.join(root, "pyproject.toml"))
+    if "pytest" in (pyproject.get("tool") or {}):
         return "pytest"
     if stack == "node":
         cmd = str(scripts.get("test") or "")
@@ -128,11 +130,22 @@ def detect_test_framework(root: str, stack: str, scripts: dict) -> str | None:
         return "go test"
     if stack == "rust":
         return "cargo test"
-    if stack == "python":
+    if stack in ("python", "static", "unknown"):
+        # python tests are runnable with no manifest at all — a static site or a bare
+        # folder with test_*.py must not report has_tests=true yet verify nothing
         for dp, f in _walk_files(root):
             if fnmatch.fnmatch(f, "test_*.py") or fnmatch.fnmatch(f, "*_test.py"):
                 return "pytest" if _exists(root, "pytest.ini", "tox.ini") else "unittest"
     return None
+
+
+def _read_toml(path: str) -> dict:
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, ValueError, ImportError):
+        return {}
 
 
 def _git(root: str, *args: str) -> str | None:
@@ -148,8 +161,10 @@ def gather_evidence(root: str) -> dict:
     """What the project's own manifests declare — no claims about behavior."""
     stack = detect_stack(root)
     scripts = node_scripts(root) if stack == "node" else {}
+    status = _git(root, "status", "--porcelain")
     return {
         "commit": _git(root, "rev-parse", "HEAD"),
+        "dirty": bool(status) if status is not None else None,
         "branch": _git(root, "rev-parse", "--abbrev-ref", "HEAD"),
         "scripts": {k: v for k, v in scripts.items() if k in ("start", "test", "build", "lint")},
         "test_framework": detect_test_framework(root, stack, scripts),
@@ -179,6 +194,9 @@ def verify(root: str, timeout: int = 300) -> dict:
     Commands come only from parsed manifests above (npm test / pytest / unittest /
     go test / cargo test) — never from free-form shell strings in arbitrary files.
     """
+    if not os.path.isdir(root):
+        return {"ok": False, "passed": False, "error": f"not a directory: {root}",
+                "basis": "executed commands", "checks_run": []}
     stack = detect_stack(root)
     scripts = node_scripts(root) if stack == "node" else {}
     framework = detect_test_framework(root, stack, scripts)
@@ -200,6 +218,11 @@ def verify(root: str, timeout: int = 300) -> dict:
     ev["basis"] = "executed commands"
     ev["checks_run"] = results
     ev["passed"] = bool(results) and all(r["exit_code"] == 0 for r in results)
+    if not results:
+        ev["reason"] = "no runnable test command detected — nothing was verified"
+    if ev.get("dirty"):
+        ev["warning"] = ("working tree has uncommitted changes — these results cover the "
+                         "working tree, NOT the commit above; commit before citing it")
     if framework:
         ev["test_framework"] = framework
     return ev
@@ -220,14 +243,16 @@ def deploy_readiness(root: str, run_checks: bool = False) -> dict:
         "has_env_template": _exists(root, ".env.example", ".env.sample"),
         "has_gitignore": _exists(root, ".gitignore"),
     }
-    # parsed evidence, not file existence: package.json must actually declare scripts.start
-    checks["has_start_script"] = stack == "node" and bool(str(scripts.get("start") or "").strip())
+    # parsed evidence, not file existence: package.json must actually declare scripts.start.
+    # Only node declares one — scoring it elsewhere capped every python/go/static app < 100
+    if stack == "node":
+        checks["has_start_script"] = bool(str(scripts.get("start") or "").strip())
     recs = []
     if not checks["has_dockerfile"]:
         recs.append("Add a Dockerfile (use scaffold with the matching kind for a template).")
     if not checks["has_tests"]:
         recs.append("Add tests — deployable means verifiable.")
-    if not checks["has_start_script"] and stack == "node":
+    if stack == "node" and not checks["has_start_script"]:
         recs.append('package.json has no "start" script — add one (e.g. node server.js).')
     if not checks["has_ci"]:
         recs.append("Add a CI workflow (.github/workflows/ci.yml) to test+build on push.")
@@ -327,12 +352,23 @@ def _plan(kind: str) -> list[tuple[str, str]]:
                  (".github/workflows/ci.yml", _CI.format(build="python -m unittest"))]
     elif kind == "static":
         plan += [("index.html",
-                  "<!doctype html><meta charset=utf-8><title>app</title><h1>hello from app</h1>\n"),
+                  '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+                  '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+                  "<title>app</title>\n</head>\n<body>\n<h1>hello from app</h1>\n</body>\n</html>\n"),
+                 ("test_index.py",
+                  "import os, unittest\n\nHERE = os.path.dirname(os.path.abspath(__file__))\n\n"
+                  "class T(unittest.TestCase):\n"
+                  "    def test_index_is_mobile_ready(self):\n"
+                  "        with open(os.path.join(HERE, 'index.html'), encoding='utf-8') as f:\n"
+                  "            html = f.read()\n"
+                  "        self.assertIn('name=\"viewport\"', html)\n\n"
+                  "if __name__ == '__main__':\n    unittest.main()\n"),
                  ("Dockerfile", "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nEXPOSE 80\n"),
-                 (".github/workflows/ci.yml", _CI.format(build="echo 'static — nothing to test'"))]
+                 (".github/workflows/ci.yml", _CI.format(build="python3 -m unittest"))]
     else:
         return None
-    plan += [(".dockerignore", ".git\nnode_modules\n.venv\n__pycache__\ndist\n"),
+    plan += [(".dockerignore", ".git\nnode_modules\n.venv\n__pycache__\ndist\n"
+              + ("test_*.py\n.github\n.env.example\n" if kind == "static" else "")),
              (".env.example", "# required environment variables\nPORT=3000\n"),
              (".gitignore", "node_modules\n.venv\n__pycache__\n.env\ndist\n")]
     return plan
@@ -366,8 +402,10 @@ def scaffold(root: str, kind: str, *, replace: bool = False, dry_run: bool = Fal
             backups.append(bak)
         written.append(_w(root, rel, content))
     if not os.path.exists(os.path.join(root, "README.md")):
+        what = ("static site served by nginx, with a test, Dockerfile, and CI" if kind == "static"
+                else "/healthz endpoint, tests, Dockerfile, and CI")
         written.append(_w(root, "README.md",
-                          f"# app ({kind})\n\nScaffolded by engine-ai. Deployable skeleton with a "
-                          f"/healthz endpoint, tests, Dockerfile, and CI.\n\n## Run\n\nSee Dockerfile / CI.\n"))
+                          f"# app ({kind})\n\nScaffolded by engine-ai. Deployable skeleton: {what}."
+                          f"\n\n## Run\n\nSee Dockerfile / CI.\n"))
     return {"ok": True, "kind": kind, "root": root, "files": written, "count": len(written),
             "replaced": bool(backups), "backups": backups}

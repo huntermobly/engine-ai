@@ -174,6 +174,10 @@ class Config:
     free_only: bool = True
     paid_fallback: bool = False
     quota_exhausted: str = "pause"
+    task_timeout_s: float = 900.0     # wall clock per task attempt
+    run_timeout_s: float = 3600.0     # wall clock for a whole build run
+    max_attempts: int = 2             # attempts per task within one run (retry w/ failure context)
+    shell_isolation: str = "auto"     # auto | bwrap | none (none → shell commands refused)
     profiles: dict = field(default_factory=lambda: {"backend": Profile("backend")})
     agent_profiles: dict = field(default_factory=dict)  # agent name -> profile name
 
@@ -192,7 +196,15 @@ class Config:
             free_only=bool(rt.get("free_only", True)),
             paid_fallback=bool(rt.get("paid_fallback", False)),
             quota_exhausted=str(rt.get("quota_exhausted", "pause")),
+            task_timeout_s=float(ex.get("task_timeout_s", 900)),
+            run_timeout_s=float(ex.get("run_timeout_s", 3600)),
+            max_attempts=int(ex.get("max_attempts", 2)),
+            shell_isolation=str(ex.get("shell_isolation", "auto")),
         )
+        if cfg.shell_isolation not in ("auto", "bwrap", "none"):
+            raise ConfigError("execution.shell_isolation must be auto | bwrap | none")
+        if cfg.max_attempts < 1 or cfg.task_timeout_s <= 0 or cfg.run_timeout_s <= 0:
+            raise ConfigError("execution.max_attempts / *_timeout_s must be positive")
         if cfg.quota_exhausted not in QUOTA_ACTIONS:
             raise ConfigError(f"routing.quota_exhausted must be one of {QUOTA_ACTIONS}")
         if cfg.paid_fallback and cfg.free_only:

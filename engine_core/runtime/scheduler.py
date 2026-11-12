@@ -29,7 +29,7 @@ class Scheduler:
         return sum(1 for t in self.store.all() if t["state"] in ("leased", "running", "verifying"))
 
     def next_assignments(self, owner: str, profile_group: str = "default",
-                         max: int | None = None) -> list[dict]:
+                         max_tasks: int | None = None) -> list[dict]:
         """Claim up to (max_active_workers - active) ready tasks.
 
         Raises QuotaPaused if the account group is paused — the caller checkpoints and
@@ -41,7 +41,7 @@ class Scheduler:
                               f"{self._quota_wait(profile_group):.0f}s (quota/Retry-After)")
         self.quota_paused = False
         self.store.expire_leases()
-        limit = (max if max is not None else self.config.max_active_workers) - self.active_count()
+        limit = (max_tasks if max_tasks is not None else self.config.max_active_workers) - self.active_count()
         out = []
         for tid in self.store.ready_ids():
             if len(out) >= max(0, limit):

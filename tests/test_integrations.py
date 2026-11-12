@@ -8,13 +8,23 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp"))
 import integrations as I  # noqa: E402
 
+
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
 HAS_GIT = subprocess.run(["bash", "-c", "command -v git"], capture_output=True).returncode == 0
 
 
 def _write(root, rel, content):
     full = os.path.join(root, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    open(full, "w").write(content)
+    _writefile(full, content, "w")
 
 
 class TestResponsiveAudit(unittest.TestCase):
@@ -32,6 +42,15 @@ class TestResponsiveAudit(unittest.TestCase):
         self.assertGreaterEqual(r["score"], 80, r)
         self.assertEqual(r["findings"], [], r)
         self.assertEqual(r["verdict"], "mobile-ready")
+
+    def test_image_free_page_not_docked_for_images(self):
+        d = tempfile.mkdtemp()
+        _write(d, "index.html",
+               '<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">'
+               "<style>.b{display:grid;max-width:100%;width:90%;padding:1rem}"
+               "@media (max-width:640px){.b{gap:0}}</style><div class='b'>x</div>")
+        r = I.responsive_audit(d)
+        self.assertEqual(r["score"], 100, r)
 
     def test_nonresponsive_site_flagged(self):
         d = tempfile.mkdtemp()

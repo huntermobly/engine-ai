@@ -53,6 +53,10 @@ class SearchProvider(ABC):
             return r.read()
 
 
+class SearchBlocked(RuntimeError):
+    """The provider answered with a bot-check / challenge page instead of results."""
+
+
 class DuckDuckGoProvider(SearchProvider):
     """No API key needed — parses DuckDuckGo's plain-HTML results endpoint."""
 
@@ -67,6 +71,9 @@ class DuckDuckGoProvider(SearchProvider):
     def search(self, query: str, k: int) -> list[SearchResult]:
         url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
         body = self._fetch(url).decode("utf-8", errors="ignore")
+        if self.is_challenge(body):
+            raise SearchBlocked("DuckDuckGo returned a bot-check page instead of results "
+                                "(it rate-limits automated clients)")
         out = []
         for href, title, snippet in self._RESULT_RE.findall(body):
             out.append(SearchResult(_strip_tags(html.unescape(title)), self._clean_url(href),
@@ -74,6 +81,12 @@ class DuckDuckGoProvider(SearchProvider):
             if len(out) >= k:
                 break
         return out
+
+    @staticmethod
+    def is_challenge(body: str) -> bool:
+        """DDG's anti-bot interstitial has no result anchors and an anomaly/challenge form."""
+        low = body.lower()
+        return "result__a" not in low and ("anomaly" in low or "challenge" in low)
 
     @classmethod
     def _clean_url(cls, href: str) -> str:
@@ -141,5 +154,8 @@ class WebSearch:
             except Exception as e:  # noqa: BLE001 — one provider failing must not break the fallback chain
                 errors.append(f"{provider.name}: {e!r}")
         if errors:
-            raise RuntimeError(f"all search providers failed: {'; '.join(errors)}")
+            hint = ("" if any(isinstance(p, BraveSearchProvider) for p in self.providers) else
+                    " — set a Brave Search API key for reliable results: "
+                    "set_secret({\"name\": \"BRAVE_API_KEY\", \"value\": \"<key>\"})")
+            raise RuntimeError(f"all search providers failed: {'; '.join(errors)}{hint}")
         return []

@@ -1,6 +1,6 @@
 ---
 name: web-research
-description: Live web search for current, real-time information the offline knowledge store can't have — recent releases, current pricing/docs, breaking changes, news, anything time-sensitive. Use when a question needs what's true RIGHT NOW rather than static engineering knowledge (that's expert-answer's job). Uses engine-ai's web_search MCP tool (Brave Search if a key is configured, DuckDuckGo otherwise — no key required).
+description: Live web search for current, real-time information the offline knowledge store can't have — recent releases, current pricing/docs, breaking changes, news, anything time-sensitive. Use when a question needs what's true RIGHT NOW rather than static engineering knowledge (that's expert-answer's job). Uses engine-ai's web_search MCP tool (Brave Search if a key is configured; otherwise a keyless DuckDuckGo fallback, which often bot-checks automated clients — then web_search errors and asks for a BRAVE_API_KEY).
 ---
 
 # Web Research
@@ -19,7 +19,9 @@ model's training cutoff: current versions, pricing, recent incidents, breaking A
 
 ## Method
 1. **Check provider status** (optional but cheap) — `web_search_status()` tells you whether Brave
-   Search (higher quality) or the DuckDuckGo fallback (no key needed) is active.
+   Search (higher quality) or the DuckDuckGo fallback (no key needed) is active. If web_search
+   errors with a bot-check message, tell the user to store a Brave key with set_secret(BRAVE_API_KEY) —
+   do not report "no results".
 2. **Search** — call `web_search({ query, k })` with a specific, well-formed query (not the raw user
    question verbatim — extract the actual thing that needs a current answer). Returns
    `{ title, url, snippet }` hits.

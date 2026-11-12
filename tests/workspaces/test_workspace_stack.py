@@ -17,6 +17,16 @@ from engine_core.verification.runner import Verifier  # noqa: E402
 from engine_core.workspaces.git import WorkspaceError, WorkspaceManager  # noqa: E402
 from engine_core.workspaces.integration import IntegrationBlocked, Integrator  # noqa: E402
 
+
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
 HAS_GIT = subprocess.run(["bash", "-c", "command -v git"], capture_output=True).returncode == 0
 
 
@@ -154,7 +164,7 @@ class TestSymbols(unittest.TestCase):
                "    return 2\n")
         d = tempfile.mkdtemp()
         p = os.path.join(d, "m.py")
-        open(p, "w").write(src)
+        _writefile(p, src, "w")
         spans = extract_file(p)
         by_name = {s.name: s for s in spans}
         self.assertEqual(by_name["A"].start_line, 1)
@@ -166,7 +176,7 @@ class TestSymbols(unittest.TestCase):
         src = "export function hello() {\n  return 1;\n}\nconst x = 2;\n"
         d = tempfile.mkdtemp()
         p = os.path.join(d, "m.js")
-        open(p, "w").write(src)
+        _writefile(p, src, "w")
         spans = extract_file(p)
         self.assertIn("hello", [s.name for s in spans])
 

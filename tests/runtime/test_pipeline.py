@@ -42,9 +42,10 @@ DONE = '{"status": "done", "summary": "ok", "changed_files": []}'
 def _pipeline(home, plan_text, worker_texts=None, verifier=None):
     """A pipeline whose planner returns plan_text and workers return worker_texts."""
     assignments = Assignments(home)
-    # every profile gets a fake key so _provider_for never blocks
+    # every profile gets a fake key so _provider_for never blocks; a ':free' model id
+    # because routing is free-only by default (paid ids are refused before any call)
     for name in assignments.profiles:
-        assignments.set(name, credential_ref="fake-key", model_ref="fake/model")
+        assignments.set(name, credential_ref="fake-key", model_ref="fake/model:free")
     made = []
 
     def factory(profile, api_key):
@@ -58,7 +59,9 @@ def _pipeline(home, plan_text, worker_texts=None, verifier=None):
     import engine_core.tools.registry as R
     reg = R.Registry()
     reg.register("noop", lambda a: {"ok": True}, read_only=True)
-    return BuildPipeline(home, Config(), assignments, provider_factory=factory,
+    cfg = Config()
+    cfg.max_attempts = 1  # these tests pin single-attempt semantics; retries: test_hardening
+    return BuildPipeline(home, cfg, assignments, provider_factory=factory,
                          registry=reg, verifier=verifier), made
 
 
@@ -146,6 +149,87 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("base", ran)
         self.assertNotIn("dependent", ran, "dependent must not run on a failed base")
         self.assertEqual(out["complete"], 0)
+
+    def test_dependents_of_failed_task_reported_not_run(self):
+        """Tasks that never ran must be reported — not silently dropped so that
+        complete == len(results) reads as success."""
+        import engine_core.verification.runner as VR
+
+        class Fail(VR.Verifier):
+            def run_checks(self, workspace, commands, commit=None):
+                return {"commit": None, "workspace": workspace, "passed": False,
+                        "checks": [{"name": "x", "command": [], "exit_code": 1,
+                                    "duration_s": 0, "output_tail": ""}]}
+        plan = json.dumps({"tasks": [
+            {"id": "base", "title": "b", "profile": "backend", "objective": "o",
+             "verification": ["true"]},
+            {"id": "dep", "title": "d", "profile": "backend", "objective": "o",
+             "dependencies": ["base"]}]})
+        pipe, _ = _pipeline(self.home, plan, [DONE, DONE], verifier=Fail())
+        out = pipe.run("x")
+        self.assertEqual(out["total"], 2)
+        self.assertEqual(out["not_run"], ["dep"])
+        self.assertNotEqual(out["complete"], out["total"])
+
+    def _two_runs(self, plan1, plan2, ws1, ws2, verifier1=None):
+        p1, _ = _pipeline(self.home, plan1, [DONE] * 3, verifier=verifier1)
+        p1.run("first", workspace=ws1)
+        p2, made = _pipeline(self.home, plan2, [DONE] * 3)
+        return p2.run("second", workspace=ws2), made
+
+    def test_other_workspace_never_skips_same_task_ids(self):
+        """Planners reuse generic ids; project B must not skip 'contracts'
+        because project A completed a task with that id."""
+        out, _ = self._two_runs(PLAN, PLAN, os.path.join(self.home, "a"),
+                                os.path.join(self.home, "b"))
+        self.assertEqual(out["complete"], 3)
+        self.assertFalse(any(r.get("resumed") for r in out["results"]))
+
+    def test_same_workspace_retries_failed_and_resumes_complete(self):
+        import engine_core.verification.runner as VR
+
+        class FailTests(VR.Verifier):  # only the 'tests' task has verification
+            def run_checks(self, workspace, commands, commit=None):
+                return {"commit": None, "workspace": workspace, "passed": False,
+                        "checks": [{"name": "x", "command": [], "exit_code": 1,
+                                    "duration_s": 0, "output_tail": ""}]}
+        ws = os.path.join(self.home, "ws")
+        out, _ = self._two_runs(PLAN, PLAN, ws, ws, verifier1=FailTests())
+        by = {r["task"]: r for r in out["results"]}
+        self.assertTrue(by["contracts"].get("resumed"), "completed work is resumed")
+        self.assertTrue(by["impl"].get("resumed"))
+        self.assertEqual(by["tests"]["status"], "done", "failed task is retried")
+        self.assertFalse(by["tests"].get("resumed"))
+        self.assertEqual(out["complete"], out["total"])
+
+    def test_changed_spec_with_same_id_reruns(self):
+        ws = os.path.join(self.home, "ws")
+        changed = json.loads(PLAN)
+        changed["tasks"][0]["objective"] = "a DIFFERENT contract"
+        out, _ = self._two_runs(PLAN, json.dumps(changed), ws, ws)
+        by = {r["task"]: r for r in out["results"]}
+        self.assertFalse(by["contracts"].get("resumed"))
+
+    def test_rerun_dependency_invalidates_completed_dependent(self):
+        ws = os.path.join(self.home, "ws")
+        changed = json.loads(PLAN)
+        changed["tasks"][0]["objective"] = "a DIFFERENT contract"  # 'contracts' re-runs
+        out, _ = self._two_runs(PLAN, json.dumps(changed), ws, ws)
+        by = {r["task"]: r for r in out["results"]}
+        for dep in ("impl", "tests"):  # both depend on 'contracts'
+            self.assertFalse(by[dep].get("resumed"), f"{dep} must rebuild on the new base")
+        self.assertEqual(out["complete"], 3)
+
+    def test_stale_task_in_state_db_does_not_crash(self):
+        from engine_core.runtime.state import StateStore
+        ws = os.path.join(self.home, "ws")
+        pipe, _ = _pipeline(self.home, PLAN, [DONE] * 3)
+        st = StateStore(pipe.state_path(ws))
+        self.addCleanup(st.close)
+        st.upsert(TaskSpec.from_dict({"id": "stale", "title": "s", "objective": "o"}))
+        out = pipe.run("x", workspace=ws)
+        self.assertEqual(out["complete"], 3)
+        self.assertNotIn("stale", {r["task"] for r in out["results"]})
 
     def test_missing_key_blocks_cleanly(self):
         pipe = BuildPipeline(self.home, Config())  # no keys at all

@@ -1,0 +1,143 @@
+{
+  "objective": "Build a classic two-player tic-tac-toe game as ONE self-contained file index.html (inline <style> and <script>, no external URLs or assets). Required DOM hooks: nine <button> elements with ids cell-0 to cell-8 in row-major order whose text is \"X\", \"O\" or empty; an element with id=\"status\" whose text names the player to move (\"X\" or \"O\"), then announces the winner (e.g. \"X wins\") or a draw (\"Draw\"); a button with id=\"restart\". Rules: X moves first; turns alternate; clicking an occupied cell changes nothing; all 8 winning lines (3 rows, 3 columns, 2 diagonals) are detected; a full board with no line is a draw; after a win or draw further clicks change nothing until Restart; Restart empties the board and X moves first again. Put the pure game logic in a <script id=\"game-logic\"> that does not touch the DOM and defines createGame() returning {board, current, winner, play(index), reset()}, and the DOM wiring in a second <script>. Plan four separate tasks: (1) contract: SPEC.md with the DOM hooks, the createGame API and the test plan; (2) implementation: index.html; (3) tests: tests/game.test.js using only node:test, node:assert, node:fs and node:vm that loads the game-logic script from index.html and tests alternation, all 8 lines, draw, occupied cells, moves after game over and reset, verified with `node --test tests/game.test.js`; (4) a read-only review of index.html and the tests.",
+  "project": "tic-tac-toe-elm",
+  "workspace": "~/.engine-ai/builds/build-a-classic-two-player-tic-t-994897",
+  "planned_by_run": "run-20261109-160438-994897",
+  "plan_model": "nvidia/nemotron-3.5-super-vl:free",
+  "warnings": [],
+  "tasks": [
+    {
+      "id": "spec-contract",
+      "title": "Game contract specification",
+      "project": "default",
+      "profile": "documentation",
+      "dependencies": [],
+      "base_sha": null,
+      "owned_paths": [
+        "SPEC.md"
+      ],
+      "shared_contract_version": null,
+      "acceptance": [
+        "SPEC.md exists",
+        "documents nine button ids cell-0 to cell-8 in row-major order",
+        "documents status element text semantics (player to move, winner announcement, draw)",
+        "documents restart button behavior",
+        "documents createGame() returning {board, current, winner, play(index), reset()}",
+        "documents all 8 winning lines and draw condition",
+        "lists test cases: alternation, all lines, draw, occupied cells, moves after game over, reset"
+      ],
+      "verification": [
+        "test -f SPEC.md",
+        "grep -q 'createGame' SPEC.md",
+        "grep -q 'cell-0' SPEC.md"
+      ],
+      "artifacts": [
+        "SPEC.md"
+      ],
+      "budgets": {},
+      "objective": "Write SPEC.md defining the DOM hooks (cell-0..cell-8, status, restart), the createGame() API, game rules, and the test plan."
+    },
+    {
+      "id": "implement-game",
+      "title": "Implement self-contained index.html tic-tac-toe",
+      "project": "default",
+      "profile": "frontend",
+      "dependencies": [
+        "spec-contract"
+      ],
+      "base_sha": null,
+      "owned_paths": [
+        "index.html"
+      ],
+      "shared_contract_version": null,
+      "acceptance": [
+        "index.html exists and is self-contained (no external URLs or assets)",
+        "contains <script id=\"game-logic\"> defining createGame() returning {board, current, winner, play(index), reset()}",
+        "contains a second <script> for DOM wiring only",
+        "renders nine buttons with ids cell-0 to cell-8 row-major",
+        "contains element with id=\"status\"",
+        "contains button with id=\"restart\"",
+        "X moves first, turns alternate, occupied cells ignored",
+        "all 8 winning lines detected, full board with no line is Draw",
+        "further clicks ignored after win/draw until Restart",
+        "Restart empties board and X moves first"
+      ],
+      "verification": [
+        "test -f index.html",
+        "grep -q '<script id=\"game-logic\">' index.html",
+        "grep -q 'id=\"cell-0\"' index.html",
+        "grep -q 'id=\"status\"' index.html",
+        "grep -q 'id=\"restart\"' index.html"
+      ],
+      "artifacts": [
+        "index.html"
+      ],
+      "budgets": {},
+      "objective": "Create index.html with inline <style> and <script>, no external URLs or assets, DOM hooks per spec, pure logic in <script id='game-logic'> defining createGame(), and DOM wiring in a second script."
+    },
+    {
+      "id": "author-tests",
+      "title": "Author node:test game logic tests",
+      "project": "default",
+      "profile": "test-author",
+      "dependencies": [
+        "spec-contract",
+        "implement-game"
+      ],
+      "base_sha": null,
+      "owned_paths": [
+        "tests/game.test.js"
+      ],
+      "shared_contract_version": null,
+      "acceptance": [
+        "tests/game.test.js exists",
+        "imports only node:test, node:assert, node:fs, node:vm",
+        "reads index.html and extracts <script id='game-logic'> via fs and vm",
+        "tests that X moves first (current === 'X')",
+        "tests turn alternation after valid plays",
+        "tests all 8 winning lines (3 rows, 3 columns, 2 diagonals)",
+        "tests a full board with no line is a draw (winner === null, board full)",
+        "tests clicking an occupied cell changes nothing",
+        "tests moves after a win or draw are ignored",
+        "tests reset() restores board, current, winner to initial state"
+      ],
+      "verification": [
+        "node --test tests/game.test.js"
+      ],
+      "artifacts": [
+        "tests/game.test.js"
+      ],
+      "budgets": {},
+      "objective": "Write tests/game.test.js using only node:test, node:assert, node:fs and node:vm that loads the game-logic script from index.html and tests alternation, all 8 winning lines, draw, occupied cells, moves after game over and reset."
+    },
+    {
+      "id": "review-game",
+      "title": "Read-only review of index.html and tests",
+      "project": "default",
+      "profile": "reviewer",
+      "dependencies": [
+        "implement-game",
+        "author-tests"
+      ],
+      "base_sha": null,
+      "owned_paths": [],
+      "shared_contract_version": null,
+      "acceptance": [
+        "index.html and tests/game.test.js are read only",
+        "verifies index.html is self-contained with no external URLs/assets",
+        "verifies DOM hooks cell-0..cell-8, status, restart exist",
+        "verifies createGame() API is isolated in <script id='game-logic'> and does not touch the DOM",
+        "verifies tests cover alternation, all 8 lines, draw, occupied cells, game-over moves, reset",
+        "outputs verdict: PASS or FAIL with reasons"
+      ],
+      "verification": [
+        "test -f index.html",
+        "test -f tests/game.test.js",
+        "node --test tests/game.test.js"
+      ],
+      "artifacts": [],
+      "budgets": {},
+      "objective": "Review index.html and tests/game.test.js against SPEC.md; report a PASS/FAIL verdict only, no file modifications."
+    }
+  ]
+}
