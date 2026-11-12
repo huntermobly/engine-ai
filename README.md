@@ -197,7 +197,7 @@ system-design, ml, llm, security, …)
 
 </td><td valign="top">
 
-**MCP tools** (36)
+**MCP tools** (40)
 
 🏗️ *Build / ship* — `scaffold_app` ·
 `deploy_readiness` · `deploy_verify` ·
@@ -226,6 +226,10 @@ system-design, ml, llm, security, …)
 
 🪲 *StackOverflow* — `so_search` ·
 `so_debug`
+
+⚙️ *Engine agent builds* — `engine_info` ·
+`engine_build_start` · `engine_build_status` ·
+`engine_build_resume`
 
 </td></tr>
 </table>
@@ -302,11 +306,15 @@ status across all of them.
 | `/research <q>` | `memory_context` → `web_search` → synthesize, cited by source URL → `memory_save` |
 | `/debug <error>` | `memory_context` → `so_debug` → apply + adapt fix → **verify it passes** → `memory_save` |
 
-## 🧰 MCP tools — 36 (the agent calls these; you ask in English)
+## 🧰 MCP tools — 40 (the agent calls these; you ask in English)
 
 | Group | Tool | Purpose |
 |---|---|---|
-| 🏗️ Build/ship | `scaffold_app` | write a deployable skeleton (node-api / python-api / static): server + `/healthz` + tests + Dockerfile + CI + `.env.example`. Refuses to overwrite existing files unless `replace=true` (originals kept as `*.engine-ai.bak`); `dry_run=true` previews |
+| ⚙️ Engine builds | `engine_info` | which source tree / commit / engine home the **running server** loaded, whether the bubblewrap shell sandbox is available, provider mode — confirms the client talks to the code you expect |
+| | `engine_build_start` | start the engine's **own multi-agent build** in the background (planner → per-profile workers → verification) in a fresh workspace; returns a `run_id` at once |
+| | `engine_build_status` | live state (`running/complete/failed/blocked/crashed`), per-task states, recent events and — when finished — the report (task ids, dependencies, profiles, models, artifacts, verification, attempts, engine usage); `wait_s` ≤ 45 |
+| | `engine_build_resume` | re-run a workspace's **stored plan** (no re-planning): still-valid finished tasks are kept, failed/blocked/not-run/invalidated ones run again |
+| 🏗️ Build/ship | `scaffold_app` | write a deployable skeleton (node-api / python-api / static): node/python get a server + `/healthz` + tests, static gets `index.html` + a test; all get Dockerfile + CI + `.env.example`. Refuses to overwrite existing files unless `replace=true` (originals kept as `*.engine-ai.bak`); `dry_run=true` previews |
 | | `deploy_readiness` | deployability **inventory** + parsed **evidence** (declared scripts, test framework, CI, exact commit) + what's missing |
 | | `deploy_verify` | **execute** the project's own test command and return an evidence manifest (commands, exit codes, durations) bound to the commit |
 | | `responsive_audit` | static mobile-responsiveness score + findings (static hints — not a browser-verified journey) |
@@ -326,7 +334,7 @@ status across all of them.
 | | `app_find` | which app session a working dir belongs to (for session-aware commands) |
 | 🔑 OpenRouter | `openrouter_setup` | check every agent's API-key + model assignment; when anything is missing it returns **ask_user instructions** — Claude prompts you for `key,model` lines (or a CSV path) and imports them |
 | | `openrouter_import` | import pasted `key,model` / `profile,key,model` lines (or a CSV **file path**) — keys stored **permanently** in the AES-256-GCM vault, models saved per profile |
-| | `codex_setup` | generate **Codex CLI** config (`~/.codex/config.toml`): one OpenRouter provider + profile selector per agent key/model + a chmod-600 env file; never touches `auth.json` |
+| | `codex_setup` | generate **Codex CLI** config: one OpenRouter `[model_providers.engine_<p>]` per agent in `~/.codex/config.toml` + one `~/.codex/engine_<p>.config.toml` profile file each (`codex --profile engine_<p>`); keys stay in the vault (`eval "$(engine-ai runtime codex-env)"`), plaintext env file only with `write_env: true`; never touches `auth.json` |
 | 🎓 Knowledge | `knowledge_ingest` | clone/ingest a repo into the domain-tagged FTS5 store (records the source commit; `refresh=true` to update) |
 | | `knowledge_search` | BM25 search the ingested knowledge, optionally by domain |
 | | `knowledge_domains` | list ingested domains + chunk/repo counts + source freshness |
@@ -412,16 +420,22 @@ profiles store **references only**. Agents share work through the project-scoped
 bounded context packets, and the serialized integrator — each worker runs its packet under its
 own key/model and hands off structured outcomes.
 
-**Codex CLI** (`codex`): `codex_setup` writes a marked block into `~/.codex/config.toml` with one
-`[model_providers.engine_<profile>]` per configured agent (OpenRouter base URL + its own
-`env_key`) and a `[profiles.engine_<profile>]` selector, plus `~/.codex/engine-ai-env.sh`
-(chmod 600) holding the key exports. Your existing config is preserved (backup kept, block
-re-written idempotently), and `auth.json` — your OpenAI login — is **never touched**. Then:
-
-```bash
-source ~/.codex/engine-ai-env.sh     # or add to your shell profile — permanent
-codex --profile engine_backend       # any of the ten, each with its own key + model
-```
+**Codex CLI** (`codex`, tested 0.163.0): `codex_setup` writes a marked block into
+`~/.codex/config.toml` with one `[model_providers.engine_<profile>]` per configured agent
+(OpenRouter base URL, `wire_api = "responses"`, its own `env_key`), one
+`~/.codex/engine_<profile>.config.toml` profile file per agent. The keys themselves stay in the
+encrypted vault: `eval "$(engine-ai runtime codex-env)"` exports the `OPENROUTER_<PROFILE>_KEY`
+variables into the current shell without writing them anywhere, then `codex --profile
+engine_backend`. (`codex_setup({write_env: true})` additionally writes a chmod-600 plaintext
+`~/.codex/engine-ai-env.sh`, opt-in only.) Verified with Codex 0.163: each `--profile
+engine_<p>` selects that agent's own model, provider and key variable. **Codex does not reject an
+unknown profile name** — a typo such as `--profile engine_bakend` silently runs the *default*
+(`active`) profile, so check the `model:` / `provider:` lines Codex prints at startup. Codex 0.163 refuses to start with `wire_api = "chat"` and
+rejects legacy `[profiles.*]` tables when `--profile` is used, so neither is written. Your other
+config is preserved (backup kept, block rewritten idempotently) and `auth.json` is **never
+touched**. That makes the engine's OpenRouter keys available as Codex *model providers*; to let
+Codex *call engine-ai tools*, register the MCP server too (see
+[Agent builds through MCP](#-agent-builds-through-mcp--tested-setup)).
 
 ### keys.csv → 10 agents → shipped work
 
@@ -438,22 +452,235 @@ keys:
 
 ```bash
 engine-ai runtime keys               # detect + import keys.csv → the 10 profiles
-engine-ai runtime build "a small todo API with tests"   # planner plans → workers build → verifier checks
+engine-ai runtime build "a small todo API with tests" --project todo   # plan → build → verify
+engine-ai runtime build-status --workspace ~/.engine-ai/builds/<slug>  # live state + report
+engine-ai runtime resume ~/.engine-ai/builds/<slug>                    # retry from the stored plan
+eval "$(engine-ai runtime codex-env)"   # export the vault keys into this shell (for Codex) — nothing on disk
 ```
 
-The **planner** agent decomposes your objective into a validated task graph (contracts first);
-each **worker** runs its packet under its own profile's key + model with real build tools
-(read/write/list/run — contained to the workspace); shared context flows through project memory
-and bounded packets; every task is **verified by executed commands** (evidence manifests), and
-quota/auth failures pause with a checkpoint instead of burning retries.
+Relative paths (`--workspace .`, `--path .`, `./keys.csv`) resolve against the directory you run
+the command in. `runtime run`, `build` and `resume` also accept
+`ENGINE_AI_PROVIDER=scripted:<script.json>` for an offline dry run with no keys and no network.
+
+The **planner** agent decomposes your objective into a validated task graph (contract first, one
+owner per file); each **worker** runs its packet under its own profile's key + model with real
+build tools; dependents receive their dependencies' outcomes **and artifact contents**; the
+project's memory (that project only) feeds the planner and every worker; a task counts only when
+its required artifacts exist on disk and its verification commands pass in the sandbox. Exit
+codes: `0` every planned task done, `1` failed, `2` blocked (quota/auth — resume later). See
+[Agent builds through MCP](#-agent-builds-through-mcp--tested-setup) for the full workflow.
 
 ```bash
 engine-ai runtime plan --graph tasks.json    # validate a task dependency graph
 engine-ai runtime models refresh             # fetch the live model catalog (network)
 engine-ai runtime models pin backend <model-id>   # pin an evaluated model ID
 engine-ai runtime run --graph tasks.json --agent engine-app-builder   # run under that agent's key+model
-engine-ai runtime status                     # task states + usage totals
-engine-ai runtime verify --path . -- pytest -q
+engine-ai runtime status                     # standalone `run` queue + usage (builds: use build-status)
+engine-ai runtime verify --path . -- pytest -q          # or one quoted string: "npm test && npm run lint"
+```
+
+---
+
+## 🧪 Agent builds through MCP — tested setup
+
+Everything in this section was run on **WSL2 (Ubuntu 26.04), Python 3.14.4, Node 22.23.4,
+Claude Code 2.1.319, Codex CLI 0.163.0, bubblewrap 0.11.1**. Plain Linux uses the same
+commands; macOS was not tested. `$ENGINE_AI_DIR` below means your engine-ai checkout (or the
+npm install's package directory).
+
+### Two different bills: the host assistant vs. the engine's agents
+
+- **The host assistant** is Claude Code or Codex. It runs on *its* account and model (your
+  Claude plan, or whatever provider Codex is configured with). Its reasoning and the MCP
+  tool calls it makes are billed there.
+- **The engine's agents** (planner, frontend, test-author, reviewer, …) run inside
+  `engine_core` on the **OpenRouter profiles** you configured — one key + model per profile,
+  free-only by default.
+
+Connecting the MCP server does **not** move the host assistant onto engine keys, and it does
+**not** hand the host's conversation to the engine: `engine_build_start` passes the objective
+you (or the host) put in it; the agents see that objective, the plan, their dependencies'
+outputs and *this project's* memory — nothing else. Build reports count **engine** usage only
+(`usage.planner`, `usage.workers`); the host's usage is shown by the host (e.g. `claude -p
+--output-format json` → `total_cost_usd`).
+
+### Prerequisites (Linux / WSL)
+
+```bash
+python3 --version        # 3.11+ required (stdlib only, uses tomllib); 3.14.4 tested
+node --version           # for the example's acceptance tests; 22.23.4 tested
+bwrap --version          # bubblewrap: REQUIRED for agent shell + verification commands
+sudo apt install bubblewrap   # Debian/Ubuntu, if missing
+```
+
+Without bubblewrap the engine still builds with `write_file`/`read_file`, but it **refuses**
+every model-chosen shell command (worker `run_command` and planner verification commands)
+instead of running it unconfined — tasks that need verification then fail with a clear reason.
+
+### Claude Code: register, reconnect, smoke-test
+
+```bash
+# a) installer (user scope — every project): links skills/commands/agents + registers the MCP
+cd "$ENGINE_AI_DIR" && ./install.sh          # or: engine-ai connect
+claude mcp list                              # → engine-ai: python3 …/mcp/forge_mcp.py - ✔ Connected
+
+# b) project scope, for working ON engine-ai: the repo ships .mcp.json
+#    ("args": ["${CLAUDE_PROJECT_DIR:-.}/mcp/forge_mcp.py"]) — Claude Code asks once to approve it
+```
+
+Claude Code loads MCP servers at session start: after an update, reconnect the server from
+`/mcp` in the session, or start a new session (`claude -p` runs always start fresh servers).
+Per Claude Code's scope precedence (local → project → user), a **project** `.mcp.json` server
+named `engine-ai` is used instead of a user-scope one with the same name. To prove which code a session talks to, ask for
+`engine_info` — its `source_dir` is the directory the running server was loaded from.
+
+Smoke test (non-interactive, *only* this checkout's server, real model-issued tool calls):
+
+```bash
+cd "$ENGINE_AI_DIR"
+claude -p "Call engine_info and report source_dir and git_commit." \
+  --mcp-config .mcp.json --strict-mcp-config \
+  --allowedTools "mcp__engine-ai__engine_info" --output-format stream-json --verbose
+# stream-json shows system/init (mcp_servers: engine-ai connected, tools discovered),
+# the tool_use, and the tool_result with source_dir
+```
+
+### Codex: register and smoke-test
+
+```bash
+codex mcp add engine-ai -- python3 "$ENGINE_AI_DIR/mcp/forge_mcp.py"
+codex mcp list                               # engine-ai … enabled
+# test without touching ~/.codex: an isolated home (keys come from the environment)
+export CODEX_HOME=/path/to/isolated-codex-home     # holds config.toml with a model provider
+codex exec --skip-git-repo-check --json \
+  -c 'mcp_servers.engine-ai.default_tools_approval_mode="approve"' \
+  "Call the engine-ai tool engine_info and report source_dir."
+```
+
+`codex exec` is non-interactive, so MCP tool calls that would need approval are rejected
+unless you allow them; the `-c` override above applies to that one command only (Codex also
+supports `default_tools_approval_mode = "approve" | "writes" | "prompt" | "auto"` per server in
+`config.toml`; read-only engine tools carry the MCP `readOnlyHint`). Codex's default MCP
+`tool_timeout_sec` is 60 s — `engine_build_status` waits at most 45 s per call for that reason.
+Codex needs its own model provider: point it at a **free** OpenRouter route (`codex_setup`
+writes those) or your OpenAI login — that is the *host* bill, separate from the engine's.
+
+### Subagents (Claude Code `/agents`)
+
+`./install.sh` links all `agents/*.md` into `~/.claude/agents/` (or `$CLAUDE_CONFIG_DIR/agents`).
+`engine-orchestrator` can hand a build to the engine (`engine_build_start` →
+`engine_build_status` → `engine_build_resume`). Invoke it by asking Claude to delegate:
+
+```bash
+claude -p "Use the engine-orchestrator subagent to report the status of engine build <run_id>." \
+  --allowedTools "Agent,mcp__engine-ai__engine_info,mcp__engine-ai__engine_build_status"
+```
+
+### Provider profiles: free and paid, keys never in files you commit
+
+```bash
+cp keys.example.csv ~/.engine-ai/keys.csv    # fill in: profile,key,model (git-ignored name)
+engine-ai runtime keys                       # → encrypted vault (AES-256-GCM), model per profile
+engine-ai runtime profiles list              # masked key status + model per profile
+```
+
+Or, inside Claude Code, ask to *"set up OpenRouter keys"* (`openrouter_setup` →
+`openrouter_import`, which also accepts a CSV **path**). Don't paste keys into chat, logs or
+this README. Routing is **free-only** by default: every model the run would use is checked
+before the first call, a non-`:free` model is refused, and a response that reports a charge
+stops the run. Paid models need an explicit engine config with `routing.free_only: false`
+(see `config.example.yaml`); `paid_fallback` stays off unless you set it.
+
+### Start, monitor, retry, resume
+
+From Claude Code or Codex (MCP):
+
+1. `engine_build_start({objective, project})` → `run_id`, a **fresh** workspace
+   (`~/.engine-ai/builds/<slug>-<id>`), the background process's log path.
+2. `engine_build_status({run_id, wait_s: 40})` until `terminal` — `running`, `complete`,
+   `failed`, `blocked` (quota/auth: nothing more can run now) or `crashed` (process gone
+   without a report: read `log_tail`).
+3. `engine_build_resume({workspace})` → new `run_id`; the **stored plan** is re-executed
+   without calling the planner again.
+
+The same from a shell: `engine-ai runtime build "<objective>" --workspace <dir> --project <p>`,
+`engine-ai runtime build-status --run-id <id>`, `engine-ai runtime resume <dir>`.
+
+What the engine guarantees (each one has a regression test in `tests/runtime/test_hardening.py`):
+
+- **State per workspace** (`~/.engine-ai/builds-state/<tag>-<hash>/`): reused task ids in
+  another project never share completion state; a second concurrent run in the same workspace
+  is refused (`workspace busy`), different workspaces run concurrently.
+- **Retries**: a failed task is retried (`execution.max_attempts`, default 2) with its failure
+  in the packet. Failed/blocked dependencies stop their dependents; every planned task is in
+  the report, including `not-run` ones with the reason.
+- **Upstream defects reopen the owner, not blind retries**: when a check fails because of a file
+  the task does *not* own (e.g. the tests are right but `calc.py` is wrong), the worker reports
+  `upstream-defect` with the file and evidence. The engine reopens the task that owns that file
+  **once** with that evidence, re-verifies whatever was already built on it, then re-runs the
+  reporting task. If no upstream task owns the file, or the owner was already reopened, the run
+  stops and names the file so you can fix it by hand.
+- **Resume** keeps a finished task if its spec, its recorded artifact hashes and all its
+  dependencies are unchanged. **Hand edits are kept**: if you edit a finished task's artifact
+  (say, to fix a bug), resume re-runs that task's checks instead of its agent — passing checks
+  keep your edit (shown as `done (re-verified)`), failing ones re-run the task. Either way,
+  everything downstream rebuilds on the new content.
+- **Effect journal**: a write is journaled per run/task/attempt/call id/arguments, so a resumed
+  attempt does not repeat it — but another task's `call_0` is not mistaken for it.
+- **Timeouts**: per task attempt (`task_timeout_s`), per run (`run_timeout_s`), per provider
+  request; status shows `seconds_since_last_event`.
+- **Honest completion**: prose instead of the structured outcome is `unstructured`, a claimed
+  but missing artifact is `missing-artifacts`, a failed check is `verification-failed`.
+- **Truncated replies are re-prompted, not accepted**: when a model is cut off at
+  `max_output_tokens` (typically while emitting a whole large file in one call) or replies with
+  nothing, the worker tells it so and to write the file in parts (`write_file`, then
+  `append_file`) — up to 2 times per attempt; if it still fails, the error says the output was
+  truncated, so you know to raise `max_output_tokens` or switch model.
+
+### File ownership and isolation (what is enforced, and its limits)
+
+- `write_file`/`append_file`: only inside the task's `owned_paths` (workspace-relative); `..`,
+  absolute paths, symlinks to another task's file and symlinked directories are refused; the
+  final open uses `O_NOFOLLOW`. Reads cover the whole workspace (shared contracts stay readable).
+- Shell commands (`run_command`, verification) run in **bubblewrap**: `/` read-only, `$HOME`
+  replaced by an empty tmpfs (vault, `~/.codex`, gh/ssh tokens hidden; PATH toolchains such as
+  nvm/pyenv re-mounted read-only), the workspace as a **discarded** overlay, only the task's owned
+  *directories* persistent, no network. A command can therefore not write another task's file,
+  another project or the credential store. Owned *files* are written with `write_file`.
+- Reviewer and security-review profiles are read-only: no write tools, and their sandboxed shell
+  has no persistent writable path.
+- Limits: isolation is per *task*, not per process tree of the host; it relies on unprivileged
+  user namespaces (if `bwrap --ro-bind / / true` fails, shell commands are refused); the engine
+  itself (not the agents) can still write its own state under `~/.engine-ai`.
+
+### Project memory and context sharing
+
+Each build has a `project` (default: the workspace folder name). The planner and every worker
+get only that project's memory pockets; a verified task outcome is saved back as a `fact`
+(unverified as an `idea`) in the same project. Dependents receive their dependencies' summaries
+and artifact contents in the task packet. Two projects with conflicting facts never see each
+other's (`TestProjectMemoryHandoff`). Inspect with `memory_list({project})` /
+`memory_recall({keywords, project})`.
+
+### Quota failures and blocked builds
+
+A daily free limit (OpenRouter `free-models-per-day`, HTTP 429) is classified as **quota**: the
+request is not retried, the run **stops** (`blocked`, exit `2`), the remaining tasks are
+reported `not-run`, and **no other profile's key is tried** — that would be account rotation.
+Resume after the limit resets (00:00 UTC for OpenRouter's daily free quota), or raise the limit
+on that account; `engine_build_resume` then continues from the stored plan.
+
+### The tic-tac-toe example
+
+[`examples/tic-tac-toe/`](examples/tic-tac-toe/README.md) holds the engine build's real
+artifacts, its build records, independent acceptance tests (Node DOM shim **and** a real headless
+browser), mutation checks and a server:
+
+```bash
+cd examples/tic-tac-toe
+python3 serve.py                 # first free port from 8001 (--label A|B prefers 8001|8002)
+node --test acceptance/acceptance.test.js     # DOM-shim acceptance tests (Node, not a browser)
+python3 browser_check.py         # same scenarios in headless Edge/Chrome/Chromium
 ```
 
 ---
@@ -544,7 +771,7 @@ flowchart TD
 | link **commands** | symlinks each `commands/*.md` (the 10 slash commands) | `~/.claude/commands/` |
 | link **agents** | symlinks each `agents/*.md` (all 38 subagents → show in `/agents`) | `~/.claude/agents/` |
 | install **hook** | merges a `SessionStart` hook (backs up `settings.json` first) | `~/.claude/settings.json` |
-| register **MCP** | `claude mcp add -s user engine-ai -- python3 …/mcp/forge_mcp.py` (all 31 tools) | user scope |
+| register **MCP** | `claude mcp add -s user engine-ai -- python3 …/mcp/forge_mcp.py` (all MCP tools) | user scope |
 
 Everything installs at **user scope**, so it's available in **every folder** you open Claude Code in.
 It's **idempotent** (re-runs are safe) and **fully reversible** (`engine-ai uninstall`).
@@ -602,8 +829,14 @@ vercel login        # Vercel
 
 ## 🧪 Verified
 
-Pure-stdlib test suite (`python3 -m unittest discover -s tests`): **241 tests** — MCP protocol
-(33 tools incl. **failure paths**: parse errors, invalid params, operational-vs-protocol errors),
+Pure-stdlib test suite: `python3 -m unittest discover -s tests` (Node is needed for the
+example's acceptance tests, bubblewrap for the shell-isolation tests — those skip with a reason
+when absent). It covers the MCP protocol (all tools, incl. **failure paths**: parse errors,
+invalid params, operational-vs-protocol errors), the **MCP → background engine build** workflow
+(`tests/test_mcp_build.py`, offline scripted provider), the build-pipeline hardening
+(`tests/runtime/test_hardening.py`: task state, retries, resume, journal replay, ownership,
+shell isolation, quota, free-only, usage accounting, memory isolation, concurrency), the
+tic-tac-toe example's acceptance harness incl. **mutation checks** (`tests/test_example_tictactoe.py`),
 scaffolding (node/python/static · overwrite refusal · dry-run · backups), incremental RAG with line
 spans, AES-256-GCM vault, mobile-responsive audit, GitHub/Vercel auth guards, **memory pockets**
 (project scoping · immutable records · explicit supersede · bounded previews), **app sessions**
@@ -612,7 +845,8 @@ spans, AES-256-GCM vault, mobile-responsive audit, GitHub/Vercel auth guards, **
 executed checks), the installer (idempotent · preserves malformed settings · clean uninstall), and
 the **engine_core runtime** (providers/limiter/catalog · graph/leases/fencing/worker · worktrees/
 integrator · policy/journal · verifier/evidence — see `tests/providers/`, `tests/runtime/`,
-`tests/workspaces/`). README counts are guarded by tests (`tests/test_readme.py`) so they can't drift.
+`tests/workspaces/`). The MCP tool and domain-expert counts in this README are guarded by
+`tests/test_readme.py`; test totals are deliberately not quoted here (they change with every fix).
 
 ---
 
@@ -633,7 +867,7 @@ engine-ai uninstall          # remove from Claude Code (also runs on npm rm -g)
 
 ## 📦 Moving to another PC
 
-Copy the folder (or `npm i -g MoblyJ/engine-ai` again), then it auto-connects. Logins (`gh`, `vercel`)
+Copy the folder (or `npm install -g @okoboji/engine-ai` again), then it auto-connects. Logins (`gh`, `vercel`)
 are per-machine. See `docs/USING-IN-CLAUDE-CODE.md`.
 
 <div align="center"><sub>MIT · built for Claude Code · by <a href="https://github.com/MoblyJ">MoblyJ</a></sub></div>

@@ -89,6 +89,7 @@ class TestCredentialResolution(unittest.TestCase):
         try:
             from engine_core._compat import mcp_module
             eng = mcp_module("engine").Engine()
+            self.addCleanup(eng.close)
             for i in range(10):
                 eng.set_secret(f"K{i}", f"sk-val-{i}")
             results = [None] * 10
@@ -303,7 +304,14 @@ class TestCodexConfig(unittest.TestCase):
                          "OPENROUTER_BACKEND_KEY")
         self.assertEqual(data["model_providers"]["engine_test_author"]["base_url"],
                          "https://openrouter.ai/api/v1")
-        self.assertEqual(data["profiles"]["engine_test_author"]["model"], "m/t")
+        self.assertNotIn("profiles", data, "legacy [profiles.*] tables break modern Codex --profile")
+
+    def test_wire_api_is_responses(self):
+        # Codex CLI rejects the WHOLE config (refuses to start) on wire_api = "chat"
+        import tomllib
+        data = tomllib.loads(render_block(self.ROWS, "backend"))
+        for prov in data["model_providers"].values():
+            self.assertEqual(prov["wire_api"], "responses")
 
     def test_no_top_level_model_when_user_sets_one(self):
         import tomllib
@@ -338,6 +346,27 @@ class TestCodexConfig(unittest.TestCase):
             text = f.read()
         self.assertTrue(text.index("model =") < text.index("[tui]"),
                         "top-level keys must precede user tables")
+
+    def test_write_config_emits_profile_files(self):
+        import tomllib
+        d = tempfile.mkdtemp()
+        out = write_config(d, self.ROWS, "backend")
+        self.assertEqual(len(out["profile_files"]), len(self.ROWS))
+        with open(os.path.join(d, "engine_test_author.config.toml")) as f:
+            prof = tomllib.loads(f.read())
+        self.assertEqual(prof, {"model": "m/t", "model_provider": "engine_test_author"})
+        write_config(d, self.ROWS, "backend")  # idempotent: re-writes its own files
+        self.assertNotIn("profile_files_skipped", write_config(d, self.ROWS, "backend"))
+
+    def test_write_config_never_clobbers_user_profile_file(self):
+        d = tempfile.mkdtemp()
+        user = os.path.join(d, "engine_backend.config.toml")
+        with open(user, "w") as f:
+            f.write('model = "mine"\n')
+        out = write_config(d, self.ROWS, "backend")
+        self.assertIn(user, out["profile_files_skipped"])
+        with open(user) as f:
+            self.assertEqual(f.read(), 'model = "mine"\n')
 
     def test_write_env_file_0600(self):
         d = tempfile.mkdtemp()

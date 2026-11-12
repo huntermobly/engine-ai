@@ -21,6 +21,10 @@ execution:
   max_active_workers: 2
   max_build_processes: 1
   max_model_turns_per_task: 12   # free models spend several turns on tool calls (writing files in chunks) before their final outcome
+  task_timeout_s: 900            # wall clock per task attempt (the worker stops with status `timeout`)
+  run_timeout_s: 3600            # wall clock per build run; remaining tasks are reported not-run
+  max_attempts: 2                # attempts per task in one run; the retry gets the failure in its packet
+  shell_isolation: auto          # auto|bwrap: shell + verification commands run in bubblewrap; none: refused
 routing:
   free_only: true
   paid_fallback: false

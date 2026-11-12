@@ -55,6 +55,7 @@ class TestTaskGraph(unittest.TestCase):
 class TestStateStore(unittest.TestCase):
     def setUp(self):
         self.store = StateStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+        self.addCleanup(self.store.close)
         self.store.upsert(TaskSpec("t1", dependencies=[]))
         self.store.mark_ready(["t1"])
 
@@ -133,6 +134,7 @@ class TestWorkerLoop(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.store = StateStore(os.path.join(self.dir, "s.db"))
+        self.addCleanup(self.store.close)
         self.store.upsert(TaskSpec("t1"))
         self.store.mark_ready(["t1"])
         self.assignment = self.store.claim("t1", owner="w")
@@ -188,8 +190,10 @@ class TestExecutor(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
 
     def _exec(self, read_only=False, root=None):
-        return Executor(_registry(), Policy(read_only=read_only, root=root),
-                        os.path.join(self.dir, "effects.db"))
+        ex = Executor(_registry(), Policy(read_only=read_only, root=root),
+                      os.path.join(self.dir, "effects.db"))
+        self.addCleanup(ex.close)
+        return ex
 
     def test_result_bounded(self):
         ex = self._exec()

@@ -155,10 +155,15 @@ def vercel_status() -> dict:
     needs = {"ok": False, "needs_auth": True, "message": "Not logged in to Vercel.",
              "fix": "run:  vercel login   (or set VERCEL_TOKEN / store it with set_secret)"}
     try:
-        code, out, _ = _run((["vercel"] if shutil.which("vercel") else ["npx", "vercel"]) + ["whoami"], timeout=20)
+        # --no-install: an uncached `npx vercel` would spend ~20s downloading the CLI just to
+        # learn the user isn't logged in; fail fast and say how to install it instead
+        code, out, _ = _run((["vercel"] if shutil.which("vercel") else ["npx", "--no-install", "vercel"])
+                            + ["whoami"], timeout=20)
     except subprocess.TimeoutExpired:
         return needs
     if code != 0:
+        if not shutil.which("vercel"):
+            needs["fix"] = "install + log in:  npm i -g vercel && vercel login   (or set VERCEL_TOKEN)"
         return needs
     return {"ok": True, "auth": "cli", "user": out}
 
@@ -205,7 +210,8 @@ def responsive_audit(path: str) -> dict:
             if ext not in _FRONTEND_EXT:
                 continue
             try:
-                txt = open(os.path.join(dp, f), encoding="utf-8", errors="ignore").read()
+                with open(os.path.join(dp, f), encoding="utf-8", errors="ignore") as fh:
+                    txt = fh.read()
             except OSError:
                 continue
             if ext in (".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte"):
@@ -236,7 +242,11 @@ def responsive_audit(path: str) -> dict:
         findings.append("No responsive units (%, vw, rem, em) — px-only layouts don't scale on mobile.")
     if not checks["responsive_images"] and "<img" in blob_html.lower():
         findings.append("Images lack `srcset`/`max-width:100%` — they may overflow on small screens.")
-    score = round(100 * sum(checks.values()) / len(checks))
+    # an image check only applies to pages that HAVE images — scoring it on an
+    # image-free page docked every such site 17 points for nothing
+    scored = {k: v for k, v in checks.items()
+              if k != "responsive_images" or "<img" in blob_html.lower()}
+    score = round(100 * sum(scored.values()) / len(scored))
     return {"applicable": True, "score": score, "checks": checks, "findings": findings,
             "verdict": "mobile-ready" if score >= 80 and not findings else "needs work",
             "basis": "static analysis — not a browser-verified journey"}

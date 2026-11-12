@@ -5,6 +5,7 @@
   python3 -m engine_core run --config engine.yaml --graph tasks.json [--free-only]
                                                        lease + execute ready tasks via a provider
   python3 -m engine_core verify --path DIR -- cmd...   run verification commands → evidence
+  python3 -m engine_core build "<objective>"          multi-agent build (plan → workers → verify)
 
 `connect`/`doctor`/`knowledge` stay in the existing engine-ai CLI (preserved).
 """
@@ -15,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -58,8 +60,20 @@ def _load_graph(path: str) -> TaskGraph:
 
 def cmd_status(args) -> int:
     store = _store()
+    try:
+        return _status(args, store)
+    finally:
+        store.close()
+
+
+def _status(args, store) -> int:
     sched = Scheduler(store, load_runtime_config(args))
-    print(json.dumps(sched.status(), indent=2))
+    st = sched.status()
+    print(json.dumps(st, indent=2))
+    if not st.get("tasks"):
+        print("note: this is the standalone `run` queue. Multi-agent builds keep their task state per "
+              "workspace — see:  engine-ai runtime build-status --workspace DIR  (or --run-id ID)",
+              file=sys.stderr)
     usage_path = os.path.join(HOME, "usage.db")
     if os.path.exists(usage_path):
         print(json.dumps(UsageJournal(usage_path).totals(), indent=2))
@@ -85,6 +99,19 @@ def cmd_plan(args) -> int:
 def cmd_run(args) -> int:
     from engine_core.profiles import Assignments
     config = load_config(args.config) if args.config else Config()
+    graph = _load_graph(args.graph)  # validated BEFORE any key/provider work
+    store = _store()
+    try:
+        return _run(args, config, graph, store)
+    finally:
+        store.close()
+
+
+def _run(args, config, graph, store) -> int:
+    from engine_core.profiles import Assignments
+    for spec in graph.tasks.values():
+        store.upsert(spec)
+    store.mark_ready(store.ready_ids())
     # no config file → the ten built-in profiles (with their env credential refs);
     # a config file's profiles replace/extend them
     assignments = Assignments(HOME, config if args.config else None)
@@ -99,7 +126,8 @@ def cmd_run(args) -> int:
     limiter.configure(profile.account_group, Limits(
         requests_per_minute=int(os.environ.get("ENGINE_AI_RPM", 20)),
         requests_per_day=int(os.environ.get("ENGINE_AI_RPD", 50))))
-    api_key = assignments.resolve_key(profile)
+    scripted = os.environ.get("ENGINE_AI_PROVIDER", "")
+    api_key = "scripted-no-key" if scripted.startswith("scripted:") else assignments.resolve_key(profile)
     if not api_key:
         env_name = "OPENROUTER_" + profile.name.upper().replace("-", "_") + "_KEY"
         print(f"✗ profile {profile.name!r} has no API key configured "
@@ -110,20 +138,25 @@ def cmd_run(args) -> int:
               f"    then store the key itself with the set_secret MCP tool "
               f"(name {env_name})", file=sys.stderr)
         return 1
-    catalog = _catalog()
-    model_info = catalog.resolve(args.model or profile.model_ref)
-    if args.free_only and not model_info.free:
-        print(f"✗ {model_info.id} is not free and routing is free-only", file=sys.stderr)
-        return 1
-    provider = OpenRouterProvider(api_key=api_key,
-                                  limiter=limiter, account_group=profile.account_group)
+    if scripted.startswith("scripted:"):  # offline dry run: no key, no network, no catalog
+        from engine_core.providers.scripted import ScriptedProvider
+        provider, model_id = ScriptedProvider.load(scripted.split(":", 1)[1]), "scripted/offline:free"
+    else:
+        catalog = _catalog()
+        model_info = catalog.resolve(args.model or profile.model_ref)
+        if args.free_only and not model_info.free:
+            print(f"✗ {model_info.id} is not free and routing is free-only", file=sys.stderr)
+            return 1
+        provider = OpenRouterProvider(api_key=api_key,
+                                      limiter=limiter, account_group=profile.account_group)
+        model_id = model_info.id
     owned = [p for t in graph.tasks.values() for p in t.owned_paths]
     executor = Executor(default_registry(),
                         Policy(read_only=profile.read_only,
                                permitted_paths=owned or None),
                         journal_path=os.path.join(HOME, "effects.db"))
     usage = UsageJournal(os.path.join(HOME, "usage.db"))
-    worker = Worker(provider, model_info.id, executor, store, config, profile, usage)
+    worker = Worker(provider, model_id, executor, store, config, profile, usage)
     sched = Scheduler(store, config, limiter)
 
     ran = 0
@@ -134,7 +167,7 @@ def cmd_run(args) -> int:
                 break
             for a in assignments:
                 spec = graph.tasks[a["task_id"]]
-                packet = (f"Task {spec.id}: {spec.title or spec.objective}\n"
+                packet = (f"# Task packet {spec.id}\nTask {spec.id}: {spec.title or spec.objective}\n"
                           f"Acceptance: {spec.acceptance}\nVerification: {spec.verification}")
                 outcome = worker.run(a, packet)
                 print(json.dumps(outcome, indent=2)[:2000])
@@ -148,6 +181,7 @@ def cmd_run(args) -> int:
         return 2
     finally:
         usage.close()
+        executor.close()
     print(f"ran {ran} task(s); status:")
     print(json.dumps(sched.status(), indent=2))
     return 0
@@ -241,27 +275,94 @@ def cmd_keys(args) -> int:
     return 0
 
 
+def _make_pipeline(args):
+    """BuildPipeline for the CLI. ENGINE_AI_PROVIDER=scripted:<file.json> swaps every
+    profile to the offline ScriptedProvider (no keys, no network, isolated assignments)."""
+    from engine_core.pipeline import BuildPipeline
+    from engine_core.profiles import Assignments
+    config = load_config(args.config) if getattr(args, "config", None) else Config()
+    mode = os.environ.get("ENGINE_AI_PROVIDER", "")
+
+    def progress(rec):
+        if getattr(args, "quiet", False):
+            return
+        ev = rec["event"]
+        if ev in ("plan-start", "plan-end", "task-start", "task-end", "task-skip", "task-reopen", "nudge", "run-end",
+                  "resume-start"):
+            detail = {k: v for k, v in rec.items() if k not in ("ts", "event")}
+            print(f"[{time.strftime('%H:%M:%S')}] {ev} {json.dumps(detail, default=str)[:220]}",
+                  file=sys.stderr, flush=True)
+    if mode.startswith("scripted:"):
+        import tempfile
+        from engine_core.providers.scripted import ScriptedProvider
+        provider = ScriptedProvider.load(mode.split(":", 1)[1])
+        overrides = os.path.join(tempfile.mkdtemp(prefix="engine-scripted-"), "profiles.json")
+        assignments = Assignments(HOME, config, overrides_path=overrides)
+        for name in assignments.profiles:
+            assignments.set(name, credential_ref="scripted-no-key", model_ref="scripted/offline:free")
+        return BuildPipeline(HOME, config, assignments, provider_factory=lambda p, k: provider,
+                             progress=progress)
+    return BuildPipeline(HOME, config, progress=progress)
+
+
+def _print_report(out: dict) -> None:
+    print(f"run {out['run_id']}  project={out['project']}  status={out['status'].upper()}  "
+          f"({out['complete']}/{out['total']} tasks done)  exit={out['exit_code']}")
+    print(f"workspace: {out['workspace']}")
+    if out.get("stopped"):
+        print(f"stopped:   {out['stopped']}")
+    print(f"{'task':22} {'profile':15} {'status':22} {'att':>3}  deps → artifacts")
+    for t in out["tasks"]:
+        print(f"{t['id']:22} {t['profile']:15} {t['status'] + (' (re-verified)' if t.get('reverified') else ' (resumed)' if t.get('resumed') else ''):22} "
+              f"{t.get('attempts', 0):>3}  {','.join(t['dependencies']) or '-'} → "
+              f"{','.join(t.get('artifacts') or []) or '-'}")
+        if t.get("error") and t["status"] != "done":
+            print(f"{'':22} ↳ {str(t['error'])[:150]}")
+    u = out["usage"]
+    print(f"engine provider usage: planner {u['planner']['model_calls']} calls "
+          f"({u['planner']['input_tokens']} in / {u['planner']['output_tokens']} out tokens); "
+          f"workers {u['workers']['model_calls']} model calls, {u['workers']['tool_calls']} tool calls "
+          f"({u['workers']['input_tokens']} in / {u['workers']['output_tokens']} out tokens)")
+    print(f"report: {out.get('report_path')}")
+
+
 def cmd_build(args) -> int:
-    """keys.csv → 10 agents: plan (planner key) → execute per-profile → verify."""
-    from engine_core.pipeline import BuildPipeline, PipelineError
-    config = load_config(args.config) if args.config else None
-    pipeline = BuildPipeline(HOME, config)
+    """objective → planner → per-profile workers → verified artifacts. Exit 0 only when
+    EVERY planned task is done; 1 failed; 2 blocked (quota/auth/paid-refused — resume later)."""
+    from engine_core.pipeline import PipelineError
+    pipeline = _make_pipeline(args)
     try:
-        out = pipeline.run(args.objective, workspace=args.workspace,
-                           max_tasks=args.max_tasks)
+        out = pipeline.run(args.objective, workspace=args.workspace, max_tasks=args.max_tasks,
+                           project=args.project, run_id=args.run_id)
     except PipelineError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 1
-    except ProviderError as e:
-        print(f"✗ provider error ({e.kind}): {e.message}", file=sys.stderr)
-        print("  state is checkpointed — fix and re-run the same command to resume",
-              file=sys.stderr)
+    except ProviderError as e:  # planner call itself hit quota/auth
+        print(f"✗ provider error ({e.kind}): {e.message} — nothing ran; retry later", file=sys.stderr)
         return 2
-    print(json.dumps({k: v for k, v in out.items() if k != "results"}, indent=2)[:1500])
-    for r in out["results"]:
-        print(f"  {r.get('task', '?'):28} {r.get('status', '?')}"
-              + (f"  {str(r.get('error'))[:80]}" if r.get("error") else ""))
-    return 0 if out["complete"] == len(out["results"]) else 1
+    print(json.dumps(out, indent=2, default=str)) if args.json else _print_report(out)
+    return out["exit_code"]
+
+
+def cmd_resume(args) -> int:
+    """Re-run the STORED plan of a workspace: valid finished tasks resume, the rest run."""
+    from engine_core.pipeline import PipelineError
+    pipeline = _make_pipeline(args)
+    try:
+        out = pipeline.resume(args.workspace, run_id=args.run_id)
+    except PipelineError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2, default=str)) if args.json else _print_report(out)
+    return out["exit_code"]
+
+
+def cmd_build_status(args) -> int:
+    """Read-only view of a workspace's build: live status, last events, last report."""
+    from engine_core.mcp_build import build_status
+    out = build_status(HOME, workspace=args.workspace, run_id=args.run_id)
+    print(json.dumps(out, indent=2, default=str))
+    return 0 if out.get("ok") else 1
 
 
 def cmd_models(args) -> int:
@@ -294,10 +395,43 @@ def cmd_models(args) -> int:
     return 0
 
 
+def cmd_codex_env(args) -> int:
+    """Print `export OPENROUTER_<P>_KEY=…` lines from the encrypted vault, for
+    `eval "$(engine-ai runtime codex-env)"` — the keys reach the shell without ever
+    being written to disk. Nothing but the exports goes to stdout."""
+    import shlex
+    from engine_core.profiles import Assignments, vault_getter, vault_name
+    getter = vault_getter()
+    if getter is None:
+        print("✗ encrypted vault unavailable", file=sys.stderr)
+        return 1
+    n = 0
+    for name, prof in sorted(Assignments(HOME).profiles.items()):
+        ref = prof.credential_ref or ""
+        key = getter(ref[len("vault:"):]) if ref.startswith("vault:") else None
+        if key:
+            print(f"export {vault_name(name)}={shlex.quote(key)}")
+            n += 1
+    if not n:
+        print("✗ no profile keys in the vault — import them first: engine-ai runtime keys",
+              file=sys.stderr)
+        return 1
+    print(f"# {n} key(s) exported — now: codex --profile engine_<profile>", file=sys.stderr)
+    return 0
+
+
 def cmd_verify(args) -> int:
+    import shlex
     verifier = Verifier()
+    words = [w for w in args.command if w != "--"] if args.command[:1] == ["--"] else list(args.command)
+    if not words:
+        print("✗ verify needs a command:  verify --path DIR -- pytest -q", file=sys.stderr)
+        return 2
+    # one word = a shell string as typed ("npm test && npm run lint"); several words
+    # (after `--`) are re-quoted, keeping a bare && as the check separator
+    line = words[0] if len(words) == 1 else " ".join(w if w == "&&" else shlex.quote(w) for w in words)
     # run through bash so quoting/&& works as typed; segments split on &&
-    commands = [["bash", "-c", c.strip()] for c in args.command.split("&&") if c.strip()]
+    commands = [["bash", "-c", c.strip()] for c in line.split("&&") if c.strip()]
     result = verifier.run_checks(args.path, commands, commit=_git_sha(args.path))
     print(json.dumps(result, indent=2))
     return 0 if result["passed"] else 1
@@ -338,7 +472,9 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("verify", help="run verification commands → evidence")
     p.add_argument("--path", required=True)
-    p.add_argument("command", help="command(s) to run; split '&&' into sequential checks")
+    p.add_argument("command", nargs=argparse.REMAINDER,
+                   help="command(s) to run, after `--` or as one quoted string; "
+                        "'&&' splits sequential checks")
     p.set_defaults(fn=cmd_verify)
 
     p = sub.add_parser("profiles", help="per-agent API key + model assignments")
@@ -365,9 +501,29 @@ def main(argv=None) -> int:
     p = sub.add_parser("build", help="multi-agent build: plan → execute per-profile → verify")
     p.add_argument("objective", help="what the agents should build, in plain language")
     p.add_argument("--workspace", help="dir to work in (default ~/.engine-ai/builds/<slug>)")
+    p.add_argument("--project", help="memory project name (default: workspace folder name)")
     p.add_argument("--config", help="engine config (YAML/JSON)")
     p.add_argument("--max-tasks", type=int, default=6)
+    p.add_argument("--json", action="store_true", help="print the full JSON report")
+    p.add_argument("--quiet", action="store_true", help="no progress lines on stderr")
+    p.add_argument("--run-id", help=argparse.SUPPRESS)  # set by the MCP launcher
     p.set_defaults(fn=cmd_build)
+
+    p = sub.add_parser("resume", help="re-run a workspace's stored plan (retry failed/blocked tasks)")
+    p.add_argument("workspace")
+    p.add_argument("--config", help="engine config (YAML/JSON)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--run-id", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("build-status", help="live status + last report of a workspace build")
+    p.add_argument("--workspace")
+    p.add_argument("--run-id")
+    p.set_defaults(fn=cmd_build_status)
+
+    p = sub.add_parser("codex-env", help='print vault keys as exports: eval "$(engine-ai runtime codex-env)"')
+    p.set_defaults(fn=cmd_codex_env)
 
     p = sub.add_parser("models", help="model catalog: list / refresh / pin")
     m_sub = p.add_subparsers(dest="models_cmd", required=True)

@@ -62,7 +62,7 @@ Usage:
   engine-ai update 0.16.0      safely update, pinned to a specific published version
   engine-ai doctor             check prerequisites + connection status
   engine-ai mcp                run the MCP server standalone on stdio (any MCP client can use it)
-  engine-ai runtime <cmd>      engine_core runtime CLI (plan | run | status | verify | models | profiles --help)
+  engine-ai runtime <cmd>      engine_core runtime CLI (build | resume | build-status | plan | run | status | verify | keys | codex-env | models | profiles --help)
   engine-ai knowledge sync     clone + ingest the curated engineering repos into the knowledge store
   engine-ai knowledge status   show ingested domains + chunk counts
   engine-ai knowledge agents   regenerate the domain-expert subagents
@@ -98,7 +98,9 @@ switch (cmd) {
     run("python3", [MCP_SERVER], { cwd: ROOT });
   case "runtime": { // engine_core: plan | run | status | verify (provider-independent runtime)
     if (!have("python3")) { console.error("\x1b[31m✗ python3 not found.\x1b[0m"); process.exit(1); }
-    run("python3", [RUNTIME_CLI, ...process.argv.slice(3)], { cwd: ROOT });
+    // cwd = the USER's directory, so `--path .`, `./keys.csv` and relative --workspace
+    // resolve where they typed the command (RUNTIME_CLI is absolute; it finds its package).
+    run("python3", [RUNTIME_CLI, ...process.argv.slice(3)], { cwd: process.cwd() });
   }
   case "update": {
     // Published to the npm registry as the scoped package @okoboji/engine-ai
@@ -149,6 +151,10 @@ switch (cmd) {
     if (sub === "agents") {
       run("python3", [path.join(ROOT, "mcp/gen_domain_agents.py")], { cwd: ROOT });
     }
+    if (sub !== "status") {
+      console.error(`\x1b[31m✗ unknown knowledge command: ${sub}\x1b[0m  (use: sync | status | agents)`);
+      process.exit(1);
+    }
     // status — propagate the real exit code instead of always 0
     run("python3", ["-c",
       "import sys,json;sys.path.insert(0,sys.argv[1]);from knowledge import Knowledge;k=Knowledge();" +
@@ -176,7 +182,11 @@ switch (cmd) {
     // python3 + the server are the hard requirements; Claude Code is optional (standalone mode)
     process.exit(py && serverOk ? 0 : 1);
   }
-  default:
+  case "help":
     cmd_help();
     process.exit(0);
+  default:
+    console.error(`\x1b[31m✗ unknown command: ${cmd}\x1b[0m\n`);
+    cmd_help();
+    process.exit(1);
 }

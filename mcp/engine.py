@@ -38,7 +38,28 @@ CREATE TABLE IF NOT EXISTS files(
   repo TEXT, path TEXT, hash TEXT, lines INTEGER, updated_at REAL, PRIMARY KEY(repo, path));
 CREATE TABLE IF NOT EXISTS rag(
   repo TEXT, path TEXT, chunk INTEGER, start_line INTEGER, end_line INTEGER, text TEXT, vec TEXT);
+CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(
+  repo UNINDEXED, path UNINDEXED, chunk UNINDEXED, pathwords, terms, tokenize='unicode61');
 """
+
+# search_repo: BM25 over FTS5 with identifier splitting (fetchUserById → fetch user by id)
+_FTS_STOP = {"and", "or", "not", "near", "the", "a", "an", "to", "of", "in", "for", "is", "on", "with"}
+_CAMEL = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+
+
+def _split_idents(text: str) -> str:
+    """Extra searchable words for camelCase / PascalCase identifiers (snake_case already
+    splits under the unicode61 tokenizer, since `_` is a separator)."""
+    extra = []
+    for ident in set(re.findall(r"[A-Za-z][A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*|[A-Z]{2,}[a-z][A-Za-z0-9]*", text)):
+        extra.extend(_CAMEL.findall(ident))
+    return " ".join(extra)
+
+
+def _fts_query(query: str) -> str:
+    words = re.findall(r"[a-z0-9]{2,}", (query + " " + _split_idents(query)).replace("_", " ").lower())
+    terms = list(dict.fromkeys(w for w in words if w not in _FTS_STOP))[:16]
+    return " OR ".join(f'"{t}"*' for t in terms)
 
 # ----------------------------------------------------------- crypto (vault)
 # v2 (default): AES-256-GCM from the maintained `cryptography` package.
@@ -143,11 +164,32 @@ def parse_frontmatter(text: str):
     return fm, body.strip()
 
 
+_SHARED: dict = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_engine() -> "Engine":
+    """ONE Engine per process (per vault DB). Engine is thread-safe (per-thread
+    connections), so callers that only need the vault/search must share this instead of
+    constructing Engine() per call — each construction opened a new SQLite connection
+    that was never closed (hundreds per build)."""
+    path = os.path.join(HOME, "forge.db")
+    with _SHARED_LOCK:
+        eng = _SHARED.get(path)
+        if eng is None:
+            import atexit
+            eng = _SHARED[path] = Engine(path)
+            atexit.register(eng.close)  # process-lifetime instance: close cleanly at exit
+        return eng
+
+
 class Engine:
     def __init__(self, db_path: str | None = None):
         os.makedirs(HOME, exist_ok=True)
         self._db_path = db_path or os.path.join(HOME, "forge.db")
         self._local = threading.local()
+        self._conns: list[tuple[threading.Thread, sqlite3.Connection]] = []  # for close()
+        self._conns_lock = threading.Lock()
         self.db  # establish the creating thread's connection eagerly
 
     @property
@@ -167,7 +209,36 @@ class Engine:
             self._migrate(conn)
             conn.commit()
             self._local.conn = conn
+            with self._conns_lock:
+                # close connections whose thread has exited (worker threads come and go)
+                live = []
+                for th, c in self._conns:
+                    if th.is_alive():
+                        live.append((th, c))
+                    else:
+                        try:
+                            c.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                self._conns = live + [(threading.current_thread(), conn)]
         return conn
+
+    def close(self) -> None:
+        """Close every thread's connection (they reopen lazily if used again)."""
+        with self._conns_lock:
+            conns, self._conns = self._conns, []
+        for _th, c in conns:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._local = threading.local()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def _migrate(self, conn):
         """Drop pre-v0.16 rag tables that lack the span columns (the index is a
@@ -203,6 +274,26 @@ class Engine:
     def get_skill(self, name):
         r = self.db.execute("SELECT * FROM skills WHERE name=? ORDER BY version DESC LIMIT 1", (name,)).fetchone()
         return dict(r) if r else None
+
+    def sync_bundled_skills(self, repo_root: str | None = None) -> int:
+        """Register engine-ai's OWN skills/ (source="bundled") so list_skills/get_skill
+        work on a fresh install without a manual import. Idempotent (upsert)."""
+        base = os.path.join(repo_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
+        n = 0
+        for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            f = os.path.join(base, entry, "SKILL.md")
+            if not os.path.isfile(f):
+                continue
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    fm, body = parse_frontmatter(fh.read())
+                desc = fm.get("description", "")
+                desc = " ".join(desc) if isinstance(desc, list) else desc
+                n += int(self.register_skill(fm.get("name", entry), desc, body or "(empty)",
+                                             fmt="native", source="bundled")[0])
+            except Exception:  # noqa: BLE001 — one bad skill must not hide the rest
+                pass
+        return n
 
     def import_repo_skills(self, repo_root: str):
         """Auto-detect the three layouts and ingest SKILL.md files."""
@@ -266,7 +357,8 @@ class Engine:
                 try:
                     if os.path.getsize(full) > 1_000_000:
                         continue
-                    raw = open(full, "rb").read()
+                    with open(full, "rb") as fh:
+                        raw = fh.read()
                 except OSError:
                     continue
                 h = hashlib.sha1(raw).hexdigest()
@@ -275,9 +367,11 @@ class Engine:
                     continue  # unchanged since the last index — skip re-embedding
                 txt = raw.decode("utf-8", errors="ignore")
                 self.db.execute("DELETE FROM rag WHERE repo=? AND path=?", (repo, rel))
+                self.db.execute("DELETE FROM rag_fts WHERE repo=? AND path=?", (repo, rel))
                 for idx, _off, sl, el, chunk in self._file_chunks(txt):
                     self.db.execute("INSERT INTO rag VALUES(?,?,?,?,?,?,?)",
-                                    (repo, rel, idx, sl, el, chunk, json.dumps(embed(chunk))))
+                                    (repo, rel, idx, sl, el, chunk, "[]"))
+                    self._fts_insert(repo, rel, idx, chunk)
                 self.db.execute("INSERT INTO files(repo,path,hash,lines,updated_at) VALUES(?,?,?,?,?) "
                                 "ON CONFLICT(repo,path) DO UPDATE SET hash=excluded.hash, lines=excluded.lines, "
                                 "updated_at=excluded.updated_at",
@@ -292,23 +386,45 @@ class Engine:
                 break
         for rel in set(existing) - set(on_disk):  # files deleted since the last index
             self.db.execute("DELETE FROM rag WHERE repo=? AND path=?", (repo, rel))
+            self.db.execute("DELETE FROM rag_fts WHERE repo=? AND path=?", (repo, rel))
             self.db.execute("DELETE FROM files WHERE repo=? AND path=?", (repo, rel))
             removed += 1
         self.db.commit()
+        self._ensure_fts(repo)
         nf = self.db.execute("SELECT COUNT(DISTINCT path) c FROM rag WHERE repo=?", (repo,)).fetchone()["c"]
         nc = self.db.execute("SELECT COUNT(*) c FROM rag WHERE repo=?", (repo,)).fetchone()["c"]
         return {"files": nf, "chunks": nc, "added": added, "updated": updated,
                 "removed": removed, "unchanged": len(on_disk) - added - updated}
 
+    def _fts_insert(self, repo: str, rel: str, idx: int, chunk: str) -> None:
+        pathwords = re.sub(r"[/\\._-]+", " ", rel) + " " + _split_idents(rel)
+        self.db.execute("INSERT INTO rag_fts(repo,path,chunk,pathwords,terms) VALUES(?,?,?,?,?)",
+                        (repo, rel, idx, pathwords, chunk + "\n" + _split_idents(chunk)))
+
+    def _ensure_fts(self, repo: str) -> None:
+        """Indexes built before the FTS switch have rag rows but no rag_fts rows (and
+        index_repo skips unchanged files) — backfill once from the stored chunk text."""
+        has = self.db.execute("SELECT 1 FROM rag_fts WHERE repo=? LIMIT 1", (repo,)).fetchone()
+        if has:
+            return
+        rows = self.db.execute("SELECT path,chunk,text FROM rag WHERE repo=?", (repo,)).fetchall()
+        for r in rows:
+            self._fts_insert(repo, r["path"], r["chunk"], r["text"])
+        if rows:
+            self.db.commit()
+
     def search_repo(self, repo: str, query: str, k=5):
+        """BM25 ranking (path words weighted 2×) over identifier-split chunk text."""
         repo = os.path.abspath(repo)
-        qv = embed(query); scored = []
-        for r in self.db.execute(
-                "SELECT path,chunk,start_line,end_line,text,vec FROM rag WHERE repo=?", (repo,)):
-            s = _cos(qv, json.loads(r["vec"]))
-            if s > 0:
-                scored.append((s, r))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [{"path": r["path"], "score": round(s, 4), "start_line": r["start_line"],
+        match = _fts_query(query)
+        if not match:
+            return []
+        self._ensure_fts(repo)
+        rows = self.db.execute(
+            "SELECT r.path, r.start_line, r.end_line, r.text, bm25(rag_fts, 0, 0, 0, 2.0, 1.0) AS s "
+            "FROM rag_fts f JOIN rag r ON r.repo=f.repo AND r.path=f.path AND r.chunk=f.chunk "
+            "WHERE rag_fts MATCH ? AND f.repo=? ORDER BY s LIMIT ?",
+            (match, repo, int(k))).fetchall()
+        return [{"path": r["path"], "score": round(-r["s"], 4), "start_line": r["start_line"],
                  "end_line": r["end_line"], "snippet": r["text"][:400].replace("\n", " ")}
-                for s, r in scored[:k]]
+                for r in rows]

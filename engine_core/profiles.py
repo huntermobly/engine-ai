@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from engine_core.config import Config, ConfigError, Profile
 
@@ -42,12 +43,18 @@ DEFAULT_AGENTS = {
 }
 
 
+# reviewers judge, they don't edit: enforced by the executor (no write tools; their
+# sandboxed shell has no persistent writable path) — not just asked in the prompt
+READ_ONLY_PROFILES = ("reviewer", "security-review")
+
+
 def _default_profile(name: str) -> Profile:
     env = "env:OPENROUTER_" + name.upper().replace("-", "_") + "_KEY"
     ref = "catalog:validated-" + name + "-model"
     return Profile(name=name, provider="openrouter", credential_ref=env,
                    account_group="team-primary", model_ref=ref,
-                   input_target_tokens=12000, max_output_tokens=4000)
+                   input_target_tokens=12000, max_output_tokens=4000,
+                   read_only=name in READ_ONLY_PROFILES)
 
 
 def default_profiles() -> dict[str, Profile]:
@@ -58,7 +65,7 @@ def vault_getter():
     """Lazy accessor for the encrypted vault (None when unavailable)."""
     try:
         from engine_core._compat import mcp_module
-        return mcp_module("engine").Engine().get_secret
+        return mcp_module("engine").shared_engine().get_secret
     except Exception:  # noqa: BLE001 - vault optional; env refs still work
         return None
 
@@ -67,7 +74,7 @@ def vault_setter():
     """Lazy writer for the encrypted vault (None when unavailable)."""
     try:
         from engine_core._compat import mcp_module
-        return mcp_module("engine").Engine().set_secret
+        return mcp_module("engine").shared_engine().set_secret
     except Exception:  # noqa: BLE001
         return None
 
@@ -110,6 +117,15 @@ def detect_keys_file(home: str | None = None) -> dict | None:
     return None
 
 
+_PLACEHOLDER_KEY = re.compile(r"replace|your[_-]?(api[_-]?)?key|^<.*>$|^sk-or(-v1)?-?(\.\.\.|x+)?$|^x{4,}$|^changeme$",
+                              re.I)
+
+
+def is_placeholder_key(key: str) -> bool:
+    """keys.example.csv-style placeholders (sk-or-v1-REPLACE_WITH_YOUR_KEY, <key>, xxxx)."""
+    return bool(_PLACEHOLDER_KEY.search(key.strip()))
+
+
 def parse_key_csv(text: str) -> tuple[list[dict], list[str]]:
     """Parse pasted `key,model` lines (CSV body or file content).
 
@@ -139,6 +155,10 @@ def parse_key_csv(text: str) -> tuple[list[dict], list[str]]:
             continue
         if not rows[-1]["key"] or not rows[-1]["model"]:
             errors.append(f"line {i}: key and model are both required")
+            rows.pop()
+        elif is_placeholder_key(rows[-1]["key"]):
+            errors.append(f"line {i}: {rows[-1]['key'][:24]!r} is a placeholder, not a real key "
+                          "— paste your OpenRouter key (sk-or-v1-…)")
             rows.pop()
     return rows, errors
 
@@ -193,7 +213,10 @@ class Assignments:
 
     def _save(self) -> None:
         os.makedirs(self.home, exist_ok=True)
-        tmp = self.overrides_path + ".tmp"
+        # unique temp name: concurrent writers (two builds, two MCP calls) sharing one
+        # fixed ".tmp" path made one os.replace fail with FileNotFoundError
+        import uuid
+        tmp = f"{self.overrides_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.overrides, f, indent=2)
         os.replace(tmp, self.overrides_path)

@@ -29,6 +29,7 @@ class TaskSpec:
     shared_contract_version: str | None = None
     acceptance: list[str] = field(default_factory=list)
     verification: list[str] = field(default_factory=list)  # commands, run by the Verifier
+    artifacts: list[str] = field(default_factory=list)  # files that MUST exist when done
     budgets: dict = field(default_factory=dict)  # {turns, calls, output_tokens, seconds, usd}
     objective: str = ""
 

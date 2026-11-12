@@ -5,6 +5,16 @@ import subprocess
 import tempfile
 import unittest
 
+
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +50,7 @@ class MCPClient:
             return text, r["result"].get("isError", False)
 
     def close(self):
-        self.p.stdin.close(); self.p.terminate(); self.p.wait(timeout=5)
+        self.p.stdin.close(); self.p.terminate(); self.p.wait(timeout=5); self.p.stdout.close()
 
 
 class TestMCP(unittest.TestCase):
@@ -168,7 +178,7 @@ class TestMCP(unittest.TestCase):
         self.assertIn("package.json", conflict["conflicts"])
         self.assertIn("replace", conflict["hint"])
         # the existing file must be untouched
-        self.assertIn("real-app.js", open(os.path.join(target, "package.json")).read())
+        self.assertIn("real-app.js", _read(os.path.join(target, "package.json")))
         preview, _ = self.cli.tool("scaffold_app", {"path": target, "kind": "node-api", "dry_run": True})
         self.assertTrue(preview["dry_run"])
         self.assertIn("Dockerfile", preview["would_write"])
@@ -184,8 +194,8 @@ class TestMCP(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertTrue(out["replaced"])
         bak = os.path.join(target, ".github/workflows/ci.yml.engine-ai.bak")
-        self.assertEqual(open(bak).read(), "# PRECIOUS user CI\n")
-        self.assertNotEqual(open(os.path.join(target, ".github/workflows/ci.yml")).read(),
+        self.assertEqual(_read(bak), "# PRECIOUS user CI\n")
+        self.assertNotEqual(_read(os.path.join(target, ".github/workflows/ci.yml")),
                             "# PRECIOUS user CI\n")
 
     def test_readiness_reports_evidence_and_commit(self):
@@ -330,7 +340,8 @@ class TestMCP(unittest.TestCase):
         codex_dir = tempfile.mkdtemp()
         with open(os.path.join(codex_dir, "config.toml"), "w") as f:  # pre-existing user config
             f.write('[tui]\nscreen_reader_detection_done = true\n')
-        cs2, err = self.cli.tool("codex_setup", {"codex_dir": codex_dir, "active": "backend"})
+        cs2, err = self.cli.tool("codex_setup", {"codex_dir": codex_dir, "active": "backend",
+                                                 "write_env": True})
         self.assertFalse(err, cs2)
         self.assertTrue(cs2["ok"], cs2)
         with open(os.path.join(codex_dir, "config.toml")) as f:
@@ -344,7 +355,10 @@ class TestMCP(unittest.TestCase):
                          "OPENROUTER_BACKEND_KEY")
         self.assertEqual(data["model_providers"]["engine_backend"]["base_url"],
                          "https://openrouter.ai/api/v1")
-        self.assertIn("engine_researcher", data["profiles"])
+        self.assertNotIn("profiles", data, "legacy [profiles.*] tables break modern Codex --profile")
+        with open(os.path.join(codex_dir, "engine_researcher.config.toml")) as f:
+            prof = tomllib.loads(f.read())
+        self.assertEqual(prof["model_provider"], "engine_researcher")
         envf = os.path.join(codex_dir, "engine-ai-env.sh")
         with open(envf) as f:
             envtxt = f.read()

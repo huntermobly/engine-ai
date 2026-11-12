@@ -9,10 +9,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from knowledge import Knowledge, _match  # noqa: E402
 
 
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
+
 def _w(root, rel, text):
     full = os.path.join(root, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    open(full, "w").write(text)
+    _writefile(full, text, "w")
 
 
 class TestMatch(unittest.TestCase):
@@ -25,6 +35,7 @@ class TestMatch(unittest.TestCase):
 class TestKnowledge(unittest.TestCase):
     def setUp(self):
         self.k = Knowledge(db_path=os.path.join(tempfile.mkdtemp(), "k.db"))
+        self.addCleanup(self.k.close)
         self.repo = tempfile.mkdtemp()
         _w(self.repo, "README.md", "# System Design\nHorizontal scaling with a load balancer and cache invalidation via CDN.")
         _w(self.repo, "README-ja.md", "日本語 スケーリング キャッシュ")   # translated → must be skipped
@@ -57,7 +68,8 @@ class TestKnowledge(unittest.TestCase):
 
     def test_context_pack_respects_budget(self):
         from memory import Memory
-        Memory().save(["scaling", "load-balancer"], "M" * 5000, {})  # a big prior pocket
+        with Memory() as m:
+            m.save(["scaling", "load-balancer"], "M" * 5000, {})  # a big prior pocket
         self.k.ingest_path(self.repo, "system-design", "demo")
         big = self.k.context_pack(["scaling", "load-balancer"], budget_tokens=100000)
         tiny = self.k.context_pack(["scaling", "load-balancer"], budget_tokens=300)

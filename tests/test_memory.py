@@ -23,6 +23,7 @@ class TestHelpers(unittest.TestCase):
 class TestMemory(unittest.TestCase):
     def setUp(self):
         self.m = Memory(db_path=os.path.join(tempfile.mkdtemp(), "mem.db"))
+        self.addCleanup(self.m.close)
 
     def test_save_and_recall(self):
         r = self.m.save(["gamehub", "landing", "free"], "Built a free-download gaming landing page.",

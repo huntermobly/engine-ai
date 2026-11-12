@@ -68,7 +68,7 @@ class Retriever:
     def search(self, query: str, k: int = 4) -> list[CodeSpan]:
         """Stage 2: repo vector search (mcp Engine), converted to line spans."""
         engine_mod = mcp_module("engine")
-        eng = engine_mod.Engine()
+        eng = engine_mod.shared_engine()
         hits = eng.search_repo(self.repo, query, k=k)
         out = []
         for h in hits:

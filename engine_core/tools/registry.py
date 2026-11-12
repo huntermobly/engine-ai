@@ -18,6 +18,7 @@ class ToolEntry:
     schema: dict
     read_only: bool = False
     description: str = ""
+    shell: bool = False  # runs model-chosen shell commands: sandbox-only (Policy)
 
 
 class UnknownTool(KeyError):
@@ -29,9 +30,9 @@ class Registry:
         self._tools: dict[str, ToolEntry] = {}
 
     def register(self, name: str, fn, schema: dict | None = None, read_only: bool = False,
-                 description: str = "") -> None:
+                 description: str = "", shell: bool = False) -> None:
         self._tools[name] = ToolEntry(fn=fn, schema=schema or {}, read_only=read_only,
-                                      description=description)
+                                      description=description, shell=shell)
 
     def get(self, name: str) -> ToolEntry:
         if name not in self._tools:
@@ -49,29 +50,47 @@ class Registry:
 def _register_build_tools(reg: Registry) -> None:
     """File + shell tools workers need to actually BUILD things.
 
-    Path arguments are contained to the workspace by Policy (executor-side); these
-    handlers additionally default to the context workspace and bound every result.
+    Paths are resolved by the executor's Policy (`context["policy"]`) — the SAME
+    resolution that was checked is the one written, so a relative `cwd` can never
+    drift onto the server process's own working directory. Shell commands run only
+    inside the bubblewrap sandbox (engine_core/tools/sandbox.py).
     """
+    from engine_core.tools.policy import Policy
 
-    def _root(args: dict, context: dict | None) -> str:
-        ws = (context or {}).get("workspace") or os.getcwd()
-        return args.get("cwd") or args.get("root") or ws
+    def _policy(context: dict | None) -> Policy:
+        ctx = context or {}
+        return ctx.get("policy") or Policy(root=ctx.get("workspace") or os.getcwd())
+
+    def _path(args: dict, context: dict | None, key: str = "path") -> str:
+        return _policy(context).resolve(args.get(key, ""), args.get("cwd") or args.get("root"))
 
     def read_file(args, context=None):
-        path = os.path.join(_root(args, context), args["path"])
-        with open(path, encoding="utf-8", errors="ignore") as f:
+        with open(_path(args, context), encoding="utf-8", errors="ignore") as f:
             return {"ok": True, "path": args["path"], "content": f.read(50_000)}
 
     def write_file(args, context=None):
-        path = os.path.join(_root(args, context), args["path"])
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        path = _path(args, context)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         data = args.get("content", "")
-        with open(path, "w", encoding="utf-8") as f:
+        # O_NOFOLLOW: a symlink swapped in after the policy check is refused, not followed
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
         return {"ok": True, "path": args["path"], "bytes": len(data)}
 
+    def append_file(args, context=None):
+        """Append to a file (models with small output caps write big files in chunks)."""
+        path = _path(args, context)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = args.get("content", "")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(data)
+        return {"ok": True, "path": args["path"], "appended": len(data),
+                "size": os.path.getsize(path)}
+
     def list_dir(args, context=None):
-        base = os.path.join(_root(args, context), args.get("path", ""))
+        base = _path(args, context)
         entries = []
         for name in sorted(os.listdir(base))[:200]:
             full = os.path.join(base, name)
@@ -80,17 +99,23 @@ def _register_build_tools(reg: Registry) -> None:
 
     def run_command(args, context=None):
         import subprocess
+        from engine_core.tools import sandbox
+        pol = _policy(context)
         argv = args["command"] if isinstance(args["command"], list) else \
             ["bash", "-c", str(args["command"])]
+        cwd = pol.resolve(args.get("cwd") or "")
+        workspace = pol.root or cwd
+        timeout = max(1, min(int(args.get("timeout", 60) or 60), 600))
         try:
-            p = subprocess.run(argv, cwd=_root(args, context), capture_output=True,
-                               text=True, timeout=int(args.get("timeout", 60)),
+            wrapped = sandbox.wrap([str(a) for a in argv], workspace=workspace,
+                                   writable=pol.writable_dirs(), hidden=pol.hidden_paths, cwd=cwd)
+            p = subprocess.run(wrapped, capture_output=True, text=True, timeout=timeout,
                                stdin=subprocess.DEVNULL)
-            return {"ok": p.returncode == 0, "exit_code": p.returncode,
+            return {"ok": p.returncode == 0, "exit_code": p.returncode, "sandboxed": True,
                     "stdout": (p.stdout or "")[-4000:], "stderr": (p.stderr or "")[-2000:]}
         except subprocess.TimeoutExpired:
-            return {"ok": False, "exit_code": None, "stderr": "command timed out"}
-        except OSError as e:
+            return {"ok": False, "exit_code": None, "stderr": f"command timed out after {timeout}s"}
+        except (OSError, RuntimeError) as e:
             return {"ok": False, "exit_code": None, "stderr": f"{e.__class__.__name__}: {e}"}
 
     reg.register("read_file", read_file,
@@ -102,14 +127,24 @@ def _register_build_tools(reg: Registry) -> None:
                                                    "content": {"type": "string"}},
                   "required": ["path", "content"]},
                  description="Create/overwrite a file in the workspace.")
+    reg.register("append_file", append_file,
+                 {"type": "object", "properties": {"path": {"type": "string"},
+                                                   "content": {"type": "string"}},
+                  "required": ["path", "content"]},
+                 description="Append content to a file in your owned paths (write large files "
+                             "in several chunks: write_file the first, append_file the rest).")
     reg.register("list_dir", list_dir,
                  {"type": "object", "properties": {"path": {"type": "string"}}},
                  read_only=True, description="List a workspace directory.")
     reg.register("run_command", run_command,
                  {"type": "object",
-                  "properties": {"command": {}, "timeout": {"type": "integer"}},
+                  "properties": {"command": {}, "timeout": {"type": "integer"},
+                                 "cwd": {"type": "string"}},
                   "required": ["command"]},
-                 description="Run a command in the workspace (bounded, no stdin).")
+                 description="Run a command in the workspace inside a sandbox: offline, the "
+                             "workspace is readable, only your owned directories keep writes "
+                             "(create files with write_file). Bounded, no stdin.",
+                 shell=True)
 
 
 def build_registry() -> Registry:

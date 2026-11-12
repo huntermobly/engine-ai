@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  REFERENCE FIXTURE — hand-written test data for the ACCEPTANCE HARNESS only.
+  It is NOT produced by the engine-ai agents and is NOT the example's game.
+  It exists so tests/test_example_tictactoe.py can prove the acceptance tests pass on a
+  correct page and FAIL on deliberately broken copies of it (mutation checks).
+  The engine-built game is ../../index.html (produced by the implementation agent).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reference fixture</title>
+<style>
+  body { font-family: system-ui, sans-serif; display: grid; place-items: center; }
+  #board { display: grid; grid-template-columns: repeat(3, 4rem); gap: .3rem; }
+  #board button { width: 4rem; height: 4rem; font-size: 2rem; }
+</style>
+</head>
+<body>
+<p id="status">Player X to move</p>
+<div id="board">
+  <button id="cell-0"></button><button id="cell-1"></button><button id="cell-2"></button>
+  <button id="cell-3"></button><button id="cell-4"></button><button id="cell-5"></button>
+  <button id="cell-6"></button><button id="cell-7"></button><button id="cell-8"></button>
+</div>
+<button id="restart">Restart</button>
+<script id="game-logic">
+const LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+function createGame() {
+  const g = {
+    board: Array(9).fill(""), current: "X", winner: null,
+    play(i) {
+      if (g.winner || g.board[i] !== "") return false;
+      g.board[i] = g.current;
+      if (LINES.some((l) => l.every((k) => g.board[k] === g.current))) g.winner = g.current;
+      else if (g.board.every((v) => v !== "")) g.winner = "draw";
+      else g.current = g.current === "X" ? "O" : "X";
+      return true;
+    },
+    reset() { g.board = Array(9).fill(""); g.current = "X"; g.winner = null; },
+  };
+  return g;
+}
+</script>
+<script>
+const game = createGame();
+function render() {
+  for (let i = 0; i < 9; i++) document.getElementById("cell-" + i).textContent = game.board[i];
+  const s = document.getElementById("status");
+  s.textContent = game.winner === "draw" ? "Draw" : game.winner ? game.winner + " wins" : "Player " + game.current + " to move";
+}
+for (let i = 0; i < 9; i++) document.getElementById("cell-" + i).addEventListener("click", () => { game.play(i); render(); });
+document.getElementById("restart").addEventListener("click", () => { game.reset(); render(); });
+render();
+</script>
+</body>
+</html>

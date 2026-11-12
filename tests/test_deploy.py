@@ -9,10 +9,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import deploy  # noqa: E402
 
 
+def _read(*a, **k):
+    with open(*a, **k) as f:
+        return f.read()
+
+
+def _writefile(path, text, mode="w"):
+    with open(path, mode) as f:
+        f.write(text)
+
+
 def _write(root, rel, text):
     full = os.path.join(root, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    open(full, "w").write(text)
+    _writefile(full, text, "w")
 
 
 class TestEvidenceParsing(unittest.TestCase):
@@ -23,6 +33,49 @@ class TestEvidenceParsing(unittest.TestCase):
         self.assertFalse(rd["checks"]["has_start_script"],
                          "file existence must not pass for a missing scripts.start")
         self.assertTrue(any("start" in r for r in rd["recommendations"]))
+
+    def test_static_site_with_python_tests_is_verified(self):
+        """has_tests=true must imply deploy_verify actually runs something."""
+        d = tempfile.mkdtemp()
+        _write(d, "index.html", '<meta name="viewport" content="width=device-width">')
+        _write(d, "test_page.py", "import unittest\nclass T(unittest.TestCase):\n"
+                                  "    def test_ok(self): self.assertTrue(True)\n")
+        self.assertEqual(deploy.detect_stack(d), "static")
+        ev = deploy.verify(d)
+        self.assertEqual(ev["test_framework"], "unittest")
+        self.assertEqual(len(ev["checks_run"]), 1)
+        self.assertTrue(ev["passed"], ev)
+
+    def test_verify_with_nothing_to_run_says_so(self):
+        d = tempfile.mkdtemp()
+        _write(d, "index.html", "<h1>x</h1>")
+        ev = deploy.verify(d)
+        self.assertFalse(ev["passed"])
+        self.assertIn("nothing was verified", ev["reason"])
+
+    def test_start_script_only_scored_for_node(self):
+        d = tempfile.mkdtemp()
+        deploy.scaffold(d, "python-api")
+        rd = deploy.deploy_readiness(d)
+        self.assertNotIn("has_start_script", rd["checks"])
+        self.assertEqual(rd["score"], 100, rd["checks"])
+
+    def test_pyproject_pytest_config_detected(self):
+        d = tempfile.mkdtemp()
+        _write(d, "pyproject.toml", '[project]\nname = "x"\n\n[tool.pytest.ini_options]\naddopts = "-q"\n')
+        self.assertEqual(deploy.detect_test_framework(d, "python", {}), "pytest")
+
+    def test_dirty_tree_flagged_in_evidence(self):
+        import subprocess
+        d = tempfile.mkdtemp()
+        git = lambda *a: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                                        cwd=d, capture_output=True)
+        git("init", "-q"); _write(d, "a.txt", "1"); git("add", "."); git("commit", "-qm", "x")
+        self.assertFalse(deploy.gather_evidence(d)["dirty"])
+        _write(d, "test_new.py", "import unittest\n")
+        ev = deploy.verify(d)
+        self.assertTrue(ev["dirty"])
+        self.assertIn("uncommitted", ev["warning"])
 
     def test_test_like_filenames_are_not_tests(self):
         d = tempfile.mkdtemp()
@@ -83,7 +136,7 @@ class TestScaffoldSafety(unittest.TestCase):
         r = deploy.scaffold(d, "node-api")
         self.assertFalse(r["ok"])
         self.assertEqual(r["conflicts"], ["package.json"])
-        self.assertEqual(open(os.path.join(d, "package.json")).read(), original)
+        self.assertEqual(_read(os.path.join(d, "package.json")), original)
 
     def test_dry_run_writes_nothing(self):
         d = tempfile.mkdtemp()
@@ -98,7 +151,7 @@ class TestScaffoldSafety(unittest.TestCase):
         r = deploy.scaffold(d, "static", replace=True)
         self.assertTrue(r["ok"])
         self.assertIn(".gitignore.engine-ai.bak", r["backups"])
-        self.assertEqual(open(os.path.join(d, ".gitignore.engine-ai.bak")).read(), "precious\n")
+        self.assertEqual(_read(os.path.join(d, ".gitignore.engine-ai.bak")), "precious\n")
 
 
 if __name__ == "__main__":

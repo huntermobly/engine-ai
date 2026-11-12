@@ -75,6 +75,18 @@ def _git(path: str, *args: str, timeout: int = 120) -> tuple[int, str]:
 
 
 class Knowledge:
+    def close(self) -> None:
+        try:
+            self.db.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def __init__(self, db_path: str | None = None):
         os.makedirs(HOME, exist_ok=True)
         os.makedirs(SOURCES, exist_ok=True)
@@ -113,7 +125,8 @@ class Knowledge:
                 full = os.path.join(dp, fn); rel = os.path.relpath(full, path)
                 try:
                     # truncate-read large files (e.g. a big single README) instead of skipping them
-                    txt = open(full, encoding="utf-8", errors="ignore").read(max_bytes)
+                    with open(full, encoding="utf-8", errors="ignore") as fh:
+                        txt = fh.read(max_bytes)
                 except OSError:
                     continue
                 for ch in _chunks(txt):
@@ -139,7 +152,8 @@ class Knowledge:
             (repo, "", domain, nc, nf, time.time(), commit, time.time()))
         self.db.commit()
         try:
-            Memory().save([domain, repo, "knowledge"],
+            with Memory() as mem:
+                mem.save([domain, repo, "knowledge"],
                           f"Ingested knowledge repo '{repo}' for domain '{domain}' ({nf} files, {nc} chunks)"
                           + (f" at commit {commit[:12]}" if commit else "") + ".",
                           {"repo": repo, "domain": domain, "chunks": nc, "commit": commit},
@@ -215,7 +229,8 @@ class Knowledge:
         kws = keywords if isinstance(keywords, list) else re.split(r"[,\s]+", str(keywords))
         budget_chars = max(256, budget_tokens) * CHARS_PER_TOKEN  # floor: headers must fit
         try:
-            mem = Memory().context(kws)
+            with Memory() as m:
+                mem = m.context(kws)
         except Exception:  # noqa: BLE001
             mem = ""
         header = "# Context pack for: " + ", ".join(kws) + (f"  · domain: {domain}" if domain else "")

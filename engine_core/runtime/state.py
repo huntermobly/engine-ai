@@ -12,6 +12,7 @@ transactions are: one writer at a time, per upgrade.md's note on that flag.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -41,6 +42,10 @@ class StateError(RuntimeError):
 
 class StateStore:
     def __init__(self, db_path: str):
+        self.path = db_path
+        parent = os.path.dirname(db_path)
+        if parent and db_path != ":memory:":
+            os.makedirs(parent, exist_ok=True)
         self.db = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
