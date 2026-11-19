@@ -376,6 +376,10 @@ class BuildPipeline:
         u["model_calls"] += 1
         u["input_tokens"] += completion.usage.input_tokens
         u["output_tokens"] += completion.usage.output_tokens
+        self._progress("usage", task="(planner)", model=completion.model,
+                       input_tokens=completion.usage.input_tokens,
+                       output_tokens=completion.usage.output_tokens,
+                       cost_usd=completion.usage.cost_usd)
         specs = parse_plan(completion.content)
         graph, warnings = self._graph_from(specs[:max_tasks])
         return {"graph": graph, "plan_model": completion.model, "warnings": warnings,

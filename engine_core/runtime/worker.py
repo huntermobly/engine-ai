@@ -118,6 +118,10 @@ class Worker:
                 counts["cost_usd"] += completion.usage.cost_usd
                 if self.usage:
                     self.usage.record(task_id, completion.model, completion.usage)
+                self.progress("usage", task=task_id, model=completion.model,
+                              input_tokens=completion.usage.input_tokens,
+                              output_tokens=completion.usage.output_tokens,
+                              cost_usd=completion.usage.cost_usd)
                 messages.append(Message("assistant", completion.content,
                                         tool_calls=list(completion.tool_calls)))
                 if completion.tool_calls:

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engine-ai · Live</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#16181d;--mute:#6b7280;--line:#e5e7eb;--acc:#2563eb;--ok:#15803d;--bad:#b91c1c;--warn:#b45309;--save:#047857;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#161b22;--ink:#e6edf3;--mute:#8b949e;--line:#262c36;--acc:#58a6ff;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--save:#3fb950;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px clamp(16px,3vw,32px)}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:18px}
+h1{font-size:18px;margin:0;font-weight:650}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 10px;font-weight:600}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mute);margin-left:auto}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute)}
+.dot.on{background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)}70%{box-shadow:0 0 0 8px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.kpi .v{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}
+.kpi .s{font-size:12px;color:var(--mute)}
+.kpi.save{border-color:var(--save)} .kpi.save .v{color:var(--save)}
+.two{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);margin-bottom:14px}
+@media (max-width:900px){.two{grid-template-columns:1fr}}
+.tbl{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12px;color:var(--mute);font-weight:600}
+td.n,th.n{text-align:right}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.st-done,.st-complete{color:var(--ok);border-color:currentColor}
+.st-running{color:var(--acc);border-color:currentColor}
+.st-failed,.st-verification-failed,.st-missing-artifacts,.st-timeout{color:var(--bad);border-color:currentColor}
+.st-blocked,.st-stale,.st-interrupted,.st-not-run,.st-provider-quota{color:var(--warn);border-color:currentColor}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.run{padding:10px 0;border-bottom:1px solid var(--line)} .run:last-child{border:0}
+.run .top{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.run .obj{color:var(--mute);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run .meta{font-size:12px;color:var(--mute);margin-top:4px}
+.feed{max-height:520px;overflow:auto;margin:0;padding:0;list-style:none}
+.feed li{padding:6px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:64px 1fr;gap:8px}
+.feed time{color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
+.feed .p{color:var(--mute);font-size:11px}
+.feed li.new{animation:flash 1.5s}
+@keyframes flash{from{background:color-mix(in srgb,var(--acc) 18%,transparent)}to{background:transparent}}
+svg{width:100%;height:180px;display:block}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--mute);margin-top:6px;flex-wrap:wrap}
+.sw{display:inline-block;width:10px;height:3px;vertical-align:middle;margin-right:4px}
+.empty{color:var(--mute);padding:20px 0;text-align:center}
+.note{font-size:12px;color:var(--mute);margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>engine-ai · Agent activity &amp; savings</h1>
+  <span class="live"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+</header>
+
+<section class="grid kpis">
+  <div class="card kpi save"><h2>Cost saved</h2><div class="v" id="k-saved">–</div><div class="s" id="k-saved-s"></div></div>
+  <div class="card kpi"><h2>Tokens used</h2><div class="v" id="k-tok">–</div><div class="s" id="k-tok-s"></div></div>
+  <div class="card kpi"><h2>Actual cost</h2><div class="v" id="k-cost">–</div><div class="s" id="k-cost-s"></div></div>
+  <div class="card kpi"><h2>Agent work</h2><div class="v" id="k-tasks">–</div><div class="s" id="k-tasks-s"></div></div>
+  <div class="card kpi"><h2>Builds</h2><div class="v" id="k-runs">–</div><div class="s" id="k-runs-s"></div></div>
+</section>
+
+<section class="grid two">
+  <div class="card">
+    <h2>Cumulative cost — baseline vs actual</h2>
+    <svg id="chart" viewBox="0 0 600 180" preserveAspectRatio="none" role="img" aria-label="Cumulative cost chart"></svg>
+    <div class="legend"><span><span class="sw" style="background:var(--warn)"></span>Baseline (paid model)</span><span><span class="sw" style="background:var(--ok)"></span>Actual</span><span id="chart-s"></span></div>
+  </div>
+  <div class="card">
+    <h2>Per agent</h2>
+    <div class="tbl"><table><thead><tr><th>Agent</th><th class="n">Tasks</th><th class="n">Calls</th><th class="n">Tools</th><th class="n">Tokens</th><th class="n">Saved</th></tr></thead><tbody id="agents"></tbody></table></div>
+  </div>
+</section>
+
+<section class="grid two">
+  <div class="card"><h2>Builds</h2><div id="runs"></div></div>
+  <div class="card"><h2>Live activity — what the AI did</h2><ul class="feed" id="feed"></ul></div>
+</section>
+
+<p class="note" id="note"></p>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n||0).toLocaleString();
+const usd = n => '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits: n && n < 0.01 ? 4 : 2});
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ago = ts => { if(!ts) return '–'; const s = Date.now()/1000 - ts; if (s < 60) return Math.max(0,Math.round(s))+'s ago'; if (s < 3600) return Math.round(s/60)+'m ago'; if (s < 86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; };
+const clock = ts => new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+const pill = s => `<span class="pill st-${esc(s)}">${esc(s)}</span>`;
+let seen = new Set(), first = true, snap = null;
+
+function render(d){
+  snap = d;
+  const t = d.totals, b = d.baseline;
+  $('k-saved').textContent = usd(t.saved_usd);
+  $('k-saved-s').textContent = `${t.saved_pct}% vs ${usd(t.baseline_usd)} on baseline`;
+  $('k-tok').textContent = fmt(t.input_tokens + t.output_tokens);
+  $('k-tok-s').textContent = `${fmt(t.input_tokens)} in · ${fmt(t.output_tokens)} out · ${fmt(t.model_calls)} calls`;
+  $('k-cost').textContent = usd(t.cost_usd);
+  $('k-cost-s').textContent = 'billed by the provider';
+  $('k-tasks').textContent = `${fmt(t.tasks_done)}/${fmt(t.tasks_total)}`;
+  $('k-tasks-s').textContent = `tasks done · ${fmt(t.tool_calls)} tool calls`;
+  $('k-runs').textContent = fmt(t.runs);
+  $('k-runs-s').textContent = t.active ? `${t.active} running now` : 'none running';
+  $('note').textContent = `Saved = tokens priced at the baseline ($${b.input_per_mtok}/M input, $${b.output_per_mtok}/M output) minus actual provider cost — an estimate. Change it with --baseline-in / --baseline-out. Counts engine provider calls only; the host assistant's own usage isn't visible here.`;
+
+  $('agents').innerHTML = d.agents.length ? d.agents.map(a => `<tr title="${esc((a.models||[]).join(', '))}">
+    <td>${esc(a.profile)}</td><td class="n">${a.done}<span style="color:var(--mute)">/${a.started||a.done+a.failed}</span></td>
+    <td class="n">${fmt(a.calls)}</td><td class="n">${fmt(a.tools)}</td><td class="n">${fmt(a.in+a.out)}</td>
+    <td class="n" style="color:var(--save)">${usd(a.baseline_usd - a.cost)}</td></tr>`).join('')
+    : `<tr><td colspan="6" class="empty">No agent activity yet</td></tr>`;
+
+  $('runs').innerHTML = d.runs.length ? d.runs.map(r => `<div class="run">
+    <div class="top"><strong>${esc(r.project)}</strong>${pill(r.state)}<span style="color:var(--mute);font-size:12px">${ago(r.updated_at)}</span></div>
+    ${r.objective ? `<div class="obj" title="${esc(r.objective)}">${esc(r.objective)}</div>` : ''}
+    <div class="chips">${r.tasks.map(x => `<span class="pill st-${esc(x.status)}" title="${esc([x.profile,x.model].filter(Boolean).join(' · '))}">${esc(x.id)}${r.current_task===x.id?' ⟳':''}</span>`).join('')}</div>
+    <div class="meta">${fmt(r.input_tokens+r.output_tokens)} tokens · ${fmt(r.model_calls)} calls · ${fmt(r.tool_calls)} tools · cost ${usd(r.cost_usd)} · <span style="color:var(--save)">saved ${usd(r.saved_usd)}</span>${r.usage_source==='report'?' · from final report':''}</div>
+  </div>`).join('') : `<div class="empty">No builds yet — run <code>engine-ai runtime build "…"</code></div>`;
+
+  const items = d.feed.map(f => { const k = f.ts+'|'+f.text; const isNew = !first && !seen.has(k); return {f,k,isNew}; });
+  $('feed').innerHTML = items.length ? items.map(({f,k,isNew}) => `<li class="${isNew?'new':''}"><time title="${new Date(f.ts*1000).toLocaleString()}">${clock(f.ts)}</time><div><div class="p">${esc(f.project)}</div>${esc(f.text)}</div></li>`).join('') : `<li class="empty" style="display:block">Waiting for activity…</li>`;
+  seen = new Set(items.map(i => i.k)); first = false;
+  chart(d.series);
+}
+
+function chart(s){
+  const svg = $('chart'), W = 600, H = 180, P = 6;
+  if (!s.length){ svg.innerHTML = `<text x="300" y="95" text-anchor="middle" fill="currentColor" opacity=".5" font-size="13">No token usage yet</text>`; $('chart-s').textContent=''; return; }
+  const pts = s.length === 1 ? [{ts:s[0].ts-1,tokens:0,cost:0,baseline:0}, s[0]] : s;
+  const x0 = pts[0].ts, x1 = pts[pts.length-1].ts || x0+1, ymax = Math.max(...pts.map(p => p.baseline), 1e-9);
+  const X = t => P + (W-2*P) * (t-x0) / ((x1-x0)||1), Y = v => H-P - (H-2*P) * v / ymax;
+  const line = k => pts.map((p,i) => `${i?'L':'M'}${X(p.ts).toFixed(1)},${Y(p[k]).toFixed(1)}`).join('');
+  svg.innerHTML = `<path d="${line('baseline')} L${X(x1)},${H-P} L${X(x0)},${H-P}Z" fill="var(--warn)" opacity=".12"/>
+    <path d="${line('baseline')}" fill="none" stroke="var(--warn)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    <path d="${line('cost')}" fill="none" stroke="var(--ok)" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  $('chart-s').textContent = `${new Date(x0*1000).toLocaleDateString()} → ${clock(x1)}`;
+}
+
+function setConn(ok, msg){ $('dot').className = 'dot' + (ok?' on':''); $('conn').textContent = msg; }
+let poll = null;
+function connect(){
+  const es = new EventSource('/events');
+  es.onopen = () => { setConn(true, 'live'); if (poll){ clearInterval(poll); poll = null; } };
+  es.onmessage = e => { try { render(JSON.parse(e.data)); setConn(true, 'live · synced ' + clock(Date.now()/1000)); } catch(_){} };
+  es.onerror = () => {   // EventSource retries by itself; poll meanwhile so the page stays current
+    setConn(false, 'reconnecting…');
+    if (!poll) poll = setInterval(() => fetch('/api/snapshot').then(r => r.json()).then(render).catch(() => {}), 3000);
+  };
+}
+setInterval(() => { if (snap) document.querySelectorAll('.run .top span:last-child').forEach((el,i) => { const r = snap.runs[i]; if (r) el.textContent = ago(r.updated_at); }); }, 5000);
+connect();
+</script>
+</body>
+</html>

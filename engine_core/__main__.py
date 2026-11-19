@@ -447,6 +447,13 @@ def _git_sha(path: str) -> str | None:
         return None
 
 
+def cmd_dashboard(args) -> int:
+    from engine_core.dashboard import serve
+    serve(HOME, host=args.host, port=args.port,
+          baseline_in=args.baseline_in, baseline_out=args.baseline_out)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="engine-ai runtime", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -516,6 +523,15 @@ def main(argv=None) -> int:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("dashboard", help="live web dashboard: agent activity, tokens, cost saved")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8787)
+    p.add_argument("--baseline-in", type=float, default=3.0,
+                   help="baseline $ per 1M input tokens used to estimate savings (default 3)")
+    p.add_argument("--baseline-out", type=float, default=15.0,
+                   help="baseline $ per 1M output tokens used to estimate savings (default 15)")
+    p.set_defaults(fn=cmd_dashboard)
 
     p = sub.add_parser("build-status", help="live status + last report of a workspace build")
     p.add_argument("--workspace")
