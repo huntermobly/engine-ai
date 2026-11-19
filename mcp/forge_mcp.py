@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root → engine_core
@@ -526,11 +527,16 @@ def handle(msg) -> dict | None:
         invalid = _validate_args(name, args)
         if invalid:
             return _error(id_, -32602, f"invalid arguments for {name}: {invalid}")
+        from engine_core.telemetry import activity
+        started = time.monotonic()
         try:
             out = fn(args)
+            activity.record(HOME, name, activity.outcome_ok(out), (time.monotonic() - started) * 1000)
             # operational outcomes (ok:false etc.) are normal results, NOT protocol errors
             return _result(id_, {"content": [{"type": "text", "text": json.dumps(out, indent=2)}]})
         except Exception as e:  # noqa: BLE001 - tool execution error per MCP
+            activity.record(HOME, name, False, (time.monotonic() - started) * 1000,
+                            error=type(e).__name__)
             return _result(id_, {"content": [{"type": "text", "text": f"error: {e!r}"}], "isError": True})
     if id_ is not None:
         return _error(id_, -32601, f"method not found: {method}")

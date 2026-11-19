@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engine-ai · Live</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --line: #e3e6eb;
+  --text: #15181d; --muted: #5d6573; --faint: #8b93a1;
+  --accent: #2f6df6; --accent-soft: #e6eefe;
+  --good: #128a4e; --good-soft: #e3f5ea; --warn: #a96a00; --warn-soft: #fdf1dc;
+  --bad: #c2362f; --bad-soft: #fbe6e4; --info: #6b4fd8; --info-soft: #eee9fd;
+  --in: #2f6df6; --out: #8db1ff; --save: #128a4e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014; --panel: #161a20; --panel-2: #1c2129; --line: #272d37;
+    --text: #e8ebf0; --muted: #a0a8b6; --faint: #6f7886;
+    --accent: #6f9bff; --accent-soft: #1b2740;
+    --good: #3ccf86; --good-soft: #13291f; --warn: #f0b545; --warn-soft: #2d2412;
+    --bad: #ff7a70; --bad-soft: #321a19; --info: #a993ff; --info-soft: #241e3d;
+    --in: #6f9bff; --out: #2f4c8f; --save: #3ccf86;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 20px 20px 48px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--faint); font-weight: 500; }
+.home { color: var(--faint); font: 12px var(--mono); overflow-wrap: anywhere; }
+.sync { margin-left: auto; display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: 12.5px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.sync.live .dot { background: var(--good); box-shadow: 0 0 0 0 var(--good); animation: pulse 2s infinite; }
+.sync.retry .dot { background: var(--warn); }
+.sync.down .dot { background: var(--bad); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 55%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.sync small { color: var(--faint); font-family: var(--mono); }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
+.kpi.hero { background: linear-gradient(135deg, var(--good-soft), var(--panel) 70%); border-color: color-mix(in srgb, var(--good) 35%, var(--line)); }
+.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.kpi .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.kpi.hero .value { color: var(--good); }
+.kpi .sub { color: var(--muted); font-size: 12.5px; }
+.kpi .sub b { color: var(--text); font-weight: 600; }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.col { display: grid; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+.panel > h2 { font-size: 14px; margin: 0; padding: 13px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.panel > h2 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.tag.agent { background: var(--accent-soft); color: var(--accent); }
+.tag.ai { background: var(--info-soft); color: var(--info); }
+.tag.save { background: var(--good-soft); color: var(--good); }
+.panel > h2 .right { margin-left: auto; color: var(--faint); font-weight: 500; font-size: 12px; }
+.body { padding: 14px 16px; }
+.note { color: var(--faint); font-size: 12px; margin: 10px 0 0; }
+
+/* chart */
+.chart { width: 100%; height: 170px; display: block; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+/* tables */
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--faint); font-weight: 600; font-size: 11.5px; text-transform: uppercase;
+  letter-spacing: .04em; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.base td { background: var(--good-soft); }
+.mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+
+/* runs */
+.runs { display: grid; gap: 12px; }
+.run { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--panel-2); }
+.run.running { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.run-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.run-title { font-weight: 600; overflow-wrap: anywhere; }
+.run-meta { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+.run-meta .mono { font-size: 11.5px; }
+.badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.s-running, .s-starting { background: var(--accent-soft); color: var(--accent); }
+.s-complete, .s-done { background: var(--good-soft); color: var(--good); }
+.s-failed, .s-crashed, .s-bad { background: var(--bad-soft); color: var(--bad); }
+.s-blocked, .s-interrupted, .s-warn { background: var(--warn-soft); color: var(--warn); }
+.s-muted { background: var(--panel); color: var(--faint); border: 1px solid var(--line); }
+.tasks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-top: 10px; }
+.task { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; min-width: 0; }
+.task .top { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.task .name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.task .prof { color: var(--muted); font-size: 11.5px; }
+.task .stats { color: var(--muted); font-size: 11.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.task .act { font: 11px var(--mono); color: var(--faint); margin-top: 4px; overflow-wrap: anywhere; }
+.task .err { color: var(--bad); font-size: 11.5px; margin-top: 4px; overflow-wrap: anywhere; }
+.task.running { border-color: var(--accent); }
+.spin { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: blink 1s infinite; margin-right: 4px; }
+@keyframes blink { 50% { opacity: .25; } }
+
+/* feeds */
+.feed { list-style: none; margin: 0; padding: 0; max-height: 520px; overflow-y: auto; }
+.feed li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; padding: 8px 16px;
+  border-bottom: 1px solid var(--line); align-items: start; }
+.feed li:last-child { border-bottom: 0; }
+.feed li.fresh { animation: fresh 2.4s ease-out; }
+@keyframes fresh { from { background: var(--accent-soft); } to { background: transparent; } }
+.ico { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.i-tool { background: var(--accent-soft); color: var(--accent); }
+.i-ok { background: var(--good-soft); color: var(--good); }
+.i-bad { background: var(--bad-soft); color: var(--bad); }
+.i-warn { background: var(--warn-soft); color: var(--warn); }
+.i-mem { background: var(--info-soft); color: var(--info); }
+.what { min-width: 0; overflow-wrap: anywhere; }
+.what .ctx { color: var(--faint); font-size: 11.5px; }
+.what .detail { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.when { color: var(--faint); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.empty { color: var(--faint); padding: 22px 16px; text-align: center; font-size: 13px; }
+.bar { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: var(--panel-2); margin: 8px 0 4px; }
+.bar span { display: block; height: 100%; }
+.tabs { display: flex; gap: 4px; margin-left: auto; }
+.tabs button { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.banner { display: none; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.banner.show { display: block; }
+@media (max-width: 520px) { .wrap { padding: 14px 14px 40px; } .kpi .value { font-size: 24px; } .sync { margin-left: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>engine-ai <span>· live dashboard</span></h1>
+      <div class="home" id="home">connecting…</div>
+    </div>
+    <div class="sync" id="sync" role="status" aria-live="polite">
+      <span class="dot"></span><span id="sync-text">Connecting…</span><small id="sync-ver"></small>
+    </div>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <section class="kpis" id="kpis"></section>
+
+  <div class="grid">
+    <div class="col">
+      <section class="panel">
+        <h2>Token cost saved <span class="tag save">savings</span><span class="right" id="save-base"></span></h2>
+        <div class="body">
+          <svg class="chart" id="chart" role="img" aria-label="Agent tokens over time"></svg>
+          <div class="legend"><span><i style="background:var(--in)"></i>input tokens</span>
+            <span><i style="background:var(--out)"></i>output tokens</span>
+            <span><i style="background:var(--save)"></i>$ saved (cumulative)</span></div>
+          <div class="tbl" style="margin-top:14px" id="compare"></div>
+          <div class="tbl" style="margin-top:14px" id="bymodel"></div>
+          <p class="note" id="save-method"></p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What the agents did <span class="tag agent">engine agents</span>
+          <span class="right" id="runs-count"></span></h2>
+        <div class="body"><div class="runs" id="runs"></div></div>
+      </section>
+
+      <section class="panel">
+        <h2>Agent profiles <span class="tag agent">engine agents</span></h2>
+        <div class="body tbl" id="profiles"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel">
+        <h2>What the AI did <span class="tag ai">host assistant</span>
+          <div class="tabs" id="ai-tabs">
+            <button data-f="all" aria-pressed="true">All</button><button data-f="tool">Tools</button>
+            <button data-f="memory">Memory</button><button data-f="build">Builds</button></div></h2>
+        <ul class="feed" id="ai-feed"></ul>
+        <p class="note" id="ai-scope" style="padding:0 16px 12px"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Agent activity <span class="tag agent">live feed</span>
+          <div class="tabs" id="ag-tabs">
+            <button data-f="all" aria-pressed="true">All</button><button data-f="tool">Tool calls</button>
+            <button data-f="task">Tasks</button></div></h2>
+        <ul class="feed" id="agent-feed"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>MCP tools the AI used <span class="tag ai">host assistant</span></h2>
+        <div class="body tbl" id="ai-tools"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const num = (n) => (n ?? 0).toLocaleString();
+  const compact = (n) => { n = n || 0; if (n >= 1e9) return (n / 1e9).toFixed(2) + "B"; if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e4) return (n / 1e3).toFixed(1) + "k"; return num(n); };
+  const usd = (v) => { if (v == null) return "—"; const a = Math.abs(v);
+    if (a === 0) return "$0.00"; if (a >= 100) return "$" + v.toFixed(0); if (a >= 1) return "$" + v.toFixed(2);
+    if (a >= 0.01) return "$" + v.toFixed(3); return "$" + v.toFixed(5); };
+  const ago = (ts) => { if (!ts) return ""; const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 5) return "just now"; if (s < 60) return Math.floor(s) + "s ago"; if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago"; return Math.floor(s / 86400) + "d ago"; };
+  const dur = (s) => { if (s == null) return ""; s = Math.round(s); if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s"; return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m"; };
+  const stamp = (ts) => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  const shortModel = (m) => String(m || "").split("/").pop();
+  const STATE_CLASS = { running: "s-running", starting: "s-starting", complete: "s-complete", done: "s-done",
+    failed: "s-failed", crashed: "s-crashed", blocked: "s-blocked", interrupted: "s-interrupted",
+    pending: "s-muted", "not-run": "s-muted", skipped: "s-muted" };
+  const badge = (s) => `<span class="badge ${STATE_CLASS[s] || (s && /fail|error|unstructured|timeout|missing/.test(s) ? "s-bad" : "s-warn")}">${esc(s || "?")}</span>`;
+
+  let snap = null, lastSync = 0, seenAgent = null, seenAi = null, aiFilter = "all", agFilter = "all";
+
+  // ------------------------------------------------------------------ sync status
+  function setSync(mode, text) {
+    const el = $("sync"); el.className = "sync " + mode; $("sync-text").textContent = text;
+  }
+  function tickSync() {
+    if (!snap) return;
+    const mode = $("sync").classList.contains("live") ? "live" : null;
+    if (mode) $("sync-text").textContent = "Live · synced " + ago(lastSync);
+    $("sync-ver").textContent = "v" + snap.version;
+    // running durations + relative times tick without a server round-trip
+    document.querySelectorAll("[data-ago]").forEach((el) => { el.textContent = ago(+el.dataset.ago); });
+    document.querySelectorAll("[data-run-start]").forEach((el) => {
+      el.textContent = dur(Date.now() / 1000 - +el.dataset.runStart); });
+  }
+  setInterval(tickSync, 1000);
+
+  // ------------------------------------------------------------------ KPIs
+  function renderKpis(s) {
+    const sv = s.savings, ag = s.agents.totals, ai = s.ai.totals;
+    const base = s.baseline;
+    $("kpis").innerHTML = `
+      <div class="kpi hero"><div class="label">Token cost saved</div>
+        <div class="value">${base.available ? usd(sv.saved_usd) : "—"}</div>
+        <div class="sub">${base.available ? `vs <b>${esc(base.name)}</b> · paid <b>${usd(sv.actual_cost_usd)}</b>${sv.saved_pct != null ? ` · ${sv.saved_pct}% saved` : ""}` : esc(base.note || "baseline unavailable")}</div></div>
+      <div class="kpi"><div class="label">Tokens offloaded to agents</div>
+        <div class="value">${compact(sv.total_tokens)}</div>
+        <div class="sub"><b>${compact(sv.input_tokens)}</b> in · <b>${compact(sv.output_tokens)}</b> out · ${compact(sv.free_tokens)} on free routes</div></div>
+      <div class="kpi"><div class="label">Agent work</div>
+        <div class="value">${num(ag.tasks_done)}<span style="font-size:15px;color:var(--muted);font-weight:500"> tasks done</span></div>
+        <div class="sub"><b>${num(ag.files_written)}</b> file writes · <b>${num(ag.commands_run)}</b> commands · <b>${num(ag.model_calls)}</b> model calls${ag.tasks_failed ? ` · <span style="color:var(--bad)">${num(ag.tasks_failed)} failed</span>` : ""}</div></div>
+      <div class="kpi"><div class="label">AI actions</div>
+        <div class="value">${num(ai.tool_calls)}<span style="font-size:15px;color:var(--muted);font-weight:500"> tool calls</span></div>
+        <div class="sub"><b>${num(ai.builds_started)}</b> builds · <b>${num(ai.memory_saved)}</b> memories · <b>${num(ai.sessions)}</b> app sessions</div></div>
+      <div class="kpi"><div class="label">Builds</div>
+        <div class="value">${num(ag.running)}<span style="font-size:15px;color:var(--muted);font-weight:500"> running</span></div>
+        <div class="sub"><b>${num(ag.runs)}</b> runs total · <b>${num(ag.turns)}</b> agent turns · <b>${num(ag.tool_calls)}</b> agent tool calls</div></div>`;
+  }
+
+  // ------------------------------------------------------------------ savings
+  function renderChart(s) {
+    const svg = $("chart"), tl = s.savings.timeline, b = tl.buckets || [];
+    const W = svg.clientWidth || 600, H = 170, padL = 44, padR = 46, padT = 10, padB = 22;
+    if (!b.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--faint)" font-size="13">No agent model calls yet — start a build (engine_build_start) and tokens appear here live.</text>`; return; }
+    const maxTok = Math.max(1, ...b.map((x) => x.input_tokens + x.output_tokens));
+    let cum = 0; const cumArr = b.map((x) => (cum += x.saved_usd)); const maxSave = Math.max(1e-9, ...cumArr);
+    const iw = W - padL - padR, ih = H - padT - padB, bw = iw / b.length;
+    let out = "";
+    [0, 0.5, 1].forEach((f) => { const y = padT + ih * (1 - f);
+      out += `<line x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="var(--line)"/>`;
+      out += `<text x="${padL - 6}" y="${y + 4}" text-anchor="end" fill="var(--faint)" font-size="10">${compact(Math.round(maxTok * f))}</text>`;
+      if (s.baseline.available) out += `<text x="${W - padR + 6}" y="${y + 4}" fill="var(--save)" font-size="10">${usd(maxSave * f)}</text>`; });
+    const fmt = (t) => new Date(t * 1000).toLocaleString([], tl.bucket_s >= 86400 ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    b.forEach((x, i) => {
+      const x0 = padL + i * bw + Math.min(2, bw * 0.15), w = Math.max(1, bw - Math.min(4, bw * 0.3));
+      const hi = ih * x.input_tokens / maxTok, ho = ih * x.output_tokens / maxTok;
+      const title = `<title>${esc(fmt(x.t))}\n${num(x.input_tokens)} in · ${num(x.output_tokens)} out · ${x.calls} calls\nsaved ${usd(x.saved_usd)}</title>`;
+      out += `<g>${title}<rect x="${x0}" y="${padT + ih - hi}" width="${w}" height="${hi}" fill="var(--in)" rx="1.5"/>` +
+             `<rect x="${x0}" y="${padT + ih - hi - ho}" width="${w}" height="${ho}" fill="var(--out)" rx="1.5"/>` +
+             `<rect x="${padL + i * bw}" y="${padT}" width="${bw}" height="${ih}" fill="transparent"/></g>`;
+    });
+    if (s.baseline.available) {
+      const pts = cumArr.map((c, i) => `${padL + i * bw + bw / 2},${padT + ih * (1 - c / maxSave)}`).join(" ");
+      out += `<polyline points="${pts}" fill="none" stroke="var(--save)" stroke-width="2" stroke-linejoin="round"/>`;
+    }
+    const labels = b.length > 2 ? [0, Math.floor(b.length / 2), b.length - 1] : b.map((_, i) => i);
+    labels.forEach((i) => { out += `<text x="${padL + i * bw + bw / 2}" y="${H - 6}" text-anchor="middle" fill="var(--faint)" font-size="10">${esc(fmt(b[i].t))}</text>`; });
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = out;
+  }
+
+  function renderSavings(s) {
+    const sv = s.savings, base = s.baseline;
+    $("save-base").textContent = base.available ? `baseline ${base.name} · $${base.usd_per_m_input}/M in · $${base.usd_per_m_output}/M out` : "";
+    renderChart(s);
+    $("compare").innerHTML = sv.compare.length ? `<table><thead><tr><th>Same ${compact(sv.total_tokens)} tokens on…</th><th class="n">Would cost</th><th class="n">You paid</th><th class="n">Saved</th></tr></thead><tbody>${
+      sv.compare.map((c) => `<tr class="${c.is_baseline ? "base" : ""}"><td>${esc(c.name)}${c.is_baseline ? ' <span class="badge s-done">baseline</span>' : ""}</td><td class="n">${usd(c.cost_usd)}</td><td class="n">${usd(sv.actual_cost_usd)}</td><td class="n" style="color:var(--good);font-weight:600">${usd(c.saved_usd)}</td></tr>`).join("")
+    }</tbody></table>` : "";
+    $("bymodel").innerHTML = sv.by_model.length ? `<table><thead><tr><th>Model the agents used</th><th class="n">Calls</th><th class="n">Tokens</th><th class="n">Charged</th><th class="n">Paid route</th></tr></thead><tbody>${
+      sv.by_model.map((m) => `<tr><td><span class="mono">${esc(m.model)}</span>${m.free ? ' <span class="badge s-done">free</span>' : ""}</td><td class="n">${num(m.calls)}</td><td class="n">${compact(m.input_tokens + m.output_tokens)}</td><td class="n">${usd(m.actual_cost_usd)}</td><td class="n" title="${esc(m.paid_route || "")}">${m.paid_route_cost_usd != null ? usd(m.paid_route_cost_usd) : "—"}</td></tr>`).join("")
+    }</tbody></table>` : "";
+    $("save-method").textContent = sv.method + " The host assistant's own tokens are not included.";
+  }
+
+  // ------------------------------------------------------------------ runs
+  function renderRuns(s) {
+    const runs = s.agents.runs;
+    $("runs-count").textContent = `${runs.length} run${runs.length === 1 ? "" : "s"}`;
+    if (!runs.length) { $("runs").innerHTML = `<div class="empty">No engine builds yet. Ask Claude to “build … with engine agents” (engine_build_start) — runs show up here the moment they start.</div>`; return; }
+    $("runs").innerHTML = runs.map((r) => {
+      const live = r.state === "running" || r.state === "starting";
+      const done = r.tasks.filter((t) => t.status === "done").length;
+      const tasks = r.tasks.map((t) => {
+        const run = t.status === "running";
+        const tools = Object.entries(t.tools).map(([k, v]) => `${k}×${v}`).join(" · ");
+        return `<div class="task ${run ? "running" : ""}"><div class="top"><span class="name">${run ? '<span class="spin"></span>' : ""}${esc(t.id)}</span>${badge(t.resumed ? "done" : t.status)}</div>
+          <div class="prof">${esc(t.profile || "—")}${t.model ? " · " + esc(shortModel(t.model)) : ""}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}${t.resumed ? " · kept from earlier run" : ""}</div>
+          ${t.turns || t.input_tokens ? `<div class="stats">${t.turns} turns · ${t.tool_calls} tools · ${compact(t.input_tokens + t.output_tokens)} tok</div>` : ""}
+          ${tools ? `<div class="act">${esc(tools)}</div>` : ""}
+          ${t.last_action && run ? `<div class="act">▸ ${esc(t.last_action)}</div>` : ""}
+          ${t.error && !t.resumed && t.status !== "done" ? `<div class="err">${esc(String(t.error).slice(0, 180))}</div>` : ""}</div>`;
+      }).join("");
+      const durHtml = live && r.started_at ? `<span data-run-start="${r.started_at}">${dur(Date.now() / 1000 - r.started_at)}</span>` : esc(dur(r.duration_s));
+      return `<div class="run ${live ? "running" : ""}"><div class="run-head">${badge(r.state)}<span class="badge s-muted">${esc(r.kind)}</span>
+          <span class="run-title">${esc(r.objective ? String(r.objective).slice(0, 140) : r.workspace_name)}</span></div>
+        <div class="run-meta"><span>${esc(stamp(r.started_at))}</span><span>${durHtml}</span>
+          <span>${done}/${r.tasks.length} tasks</span><span>${compact(r.usage.input_tokens + r.usage.output_tokens)} tokens</span>
+          ${r.saved_usd != null ? `<span style="color:var(--good)">saved ${usd(r.saved_usd)}</span>` : ""}
+          ${r.usage_source === "report" ? '<span title="this run predates live usage events — totals come from its final report">usage from report</span>' : ""}
+          <span class="mono">${esc(r.run_id)}</span>${r.project ? `<span class="mono">${esc(r.project)}</span>` : ""}</div>
+        ${r.tasks.length ? `<div class="tasks">${tasks}</div>` : `<div class="note">${r.state === "crashed" ? "Process ended before planning finished — see the run log, then resume." : "Planning…"}</div>`}</div>`;
+    }).join("");
+  }
+
+  function renderProfiles(s) {
+    const p = s.agents.profiles;
+    $("profiles").innerHTML = p.length ? `<table><thead><tr><th>Profile</th><th class="n">Tasks</th><th class="n">Done</th><th class="n">Failed</th><th class="n">Tool calls</th><th class="n">Tokens</th><th>Models</th></tr></thead><tbody>${
+      p.map((x) => `<tr><td><b>${esc(x.profile)}</b></td><td class="n">${x.tasks}</td><td class="n">${x.done}</td><td class="n">${x.failed}</td><td class="n">${x.tool_calls}</td><td class="n">${compact(x.tokens)}</td><td class="mono">${esc(x.models.map(shortModel).join(", "))}</td></tr>`).join("")
+    }</tbody></table>` : `<div class="empty">No agent tasks yet.</div>`;
+  }
+
+  // ------------------------------------------------------------------ feeds
+  function agentItem(e) {
+    const t = e.task ? `<b>${esc(e.task)}</b> ` : "";
+    switch (e.event) {
+      case "tool": return { cls: e.ok === false ? "i-bad" : "i-tool", ico: e.ok === false ? "✕" : "⚙", f: "tool",
+        html: `${t}<span class="mono">${esc(e.tool)}</span> ${e.target ? `<span class="mono" style="color:var(--muted)">${esc(e.target)}</span>` : ""}` };
+      case "task-start": return { cls: "i-tool", ico: "▶", f: "task", html: `${t}started`, detail: `${e.profile || ""} agent on ${shortModel(e.model)}${e.attempt > 1 ? ` · attempt ${e.attempt}` : ""}` };
+      case "task-end": return { cls: e.status === "done" ? "i-ok" : "i-bad", ico: e.status === "done" ? "✓" : "!", f: "task",
+        html: `${t}finished ${badge(e.status)}`, detail: e.status !== "done" ? e.error : "" };
+      case "task-skip": return { cls: "i-warn", ico: "↷", f: "task", html: `${t}${e.reason === "resumed" ? "kept from earlier run" : "skipped"} ${badge(e.status)}`, detail: e.reason !== "resumed" ? e.reason : "" };
+      case "task-reopen": return { cls: "i-warn", ico: "↺", f: "task", html: `${t}reopened by <b>${esc(e.by)}</b>`, detail: e.file ? `to fix ${e.file}` : "" };
+      case "plan-start": return { cls: "i-tool", ico: "✎", f: "task", html: `Planner started` };
+      case "plan-end": return { cls: "i-ok", ico: "≡", f: "task", html: `Plan ready · ${e.planned ?? 0} task${e.planned === 1 ? "" : "s"}` };
+      case "resume-start": return { cls: "i-tool", ico: "↻", f: "task", html: `Build resumed` };
+      case "run-end": return { cls: e.status === "complete" ? "i-ok" : "i-bad", ico: "■", f: "task", html: `Run ended ${badge(e.status)} · ${e.complete}/${e.total} tasks` };
+      case "nudge": return { cls: "i-warn", ico: "…", f: "task", html: `${t}nudged`, detail: e.reason };
+      case "memory": return { cls: "i-mem", ico: "◆", f: "task", html: `Saved a verified <b>${esc(e.kind)}</b> to project memory`, detail: e.text };
+      default: return { cls: "i-tool", ico: "•", f: "task", html: `${t}${esc(e.event)}` };
+    }
+  }
+  function aiItem(e) {
+    switch (e.type) {
+      case "tool": return { cls: e.ok ? "i-tool" : "i-bad", ico: e.ok ? "⚙" : "✕", f: "tool",
+        html: `Called <span class="mono">${esc(e.tool)}</span>${e.ok ? "" : ` ${badge("failed")}`}`, detail: [e.ms != null ? `${Math.round(e.ms)} ms` : "", e.error || ""].filter(Boolean).join(" · ") };
+      case "memory": return { cls: "i-mem", ico: "◆", f: "memory", html: `Saved a <b>${esc(e.kind)}</b> to memory${e.project ? ` · <span class="mono">${esc(e.project)}</span>` : ""}`, detail: e.text };
+      case "session": return { cls: "i-ok", ico: "◧", f: "build", html: `Opened app session <b>${esc(e.name)}</b>`, detail: e.text };
+      case "build": return { cls: "i-tool", ico: "▶", f: "build", html: e.resume ? `Resumed engine build <span class="mono">${esc(e.workspace)}</span>` : `Started engine build`, detail: e.text };
+      default: return { cls: "i-tool", ico: "•", f: "tool", html: esc(e.type) };
+    }
+  }
+  const keyOf = (e) => [e.ts, e.event || e.type, e.task || e.tool || e.id || "", e.run_id || ""].join("|");
+  function renderFeed(el, items, toItem, seen, filter, ctx, emptyMsg) {
+    const fresh = new Set();
+    const list = items.map((e) => ({ e, it: toItem(e), k: keyOf(e) })).filter((x) => filter === "all" || x.it.f === filter);
+    if (seen) list.forEach((x) => { if (!seen.has(x.k)) fresh.add(x.k); });
+    el.innerHTML = list.length ? list.map(({ e, it, k }) => `<li class="${fresh.has(k) ? "fresh" : ""}"><span class="ico ${it.cls}">${it.ico}</span>
+      <div class="what">${it.html}${ctx(e) ? `<div class="ctx">${esc(ctx(e))}</div>` : ""}${it.detail ? `<div class="detail">${esc(String(it.detail).slice(0, 220))}</div>` : ""}</div>
+      <span class="when" data-ago="${e.ts || 0}" title="${esc(stamp(e.ts))}">${ago(e.ts)}</span></li>`).join("") : `<li style="display:block"><div class="empty">${emptyMsg}</div></li>`;
+    return new Set(items.map(keyOf));
+  }
+  function renderFeeds(s) {
+    seenAgent = renderFeed($("agent-feed"), s.agents.feed, agentItem, seenAgent, agFilter,
+      (e) => [e.workspace, e.run_id].filter(Boolean).join(" · "), "No agent activity yet.");
+    seenAi = renderFeed($("ai-feed"), s.ai.feed, aiItem, seenAi, aiFilter, () => "",
+      "Nothing recorded yet. Every engine-ai MCP tool the AI calls shows up here live.");
+    const since = s.ai.totals.logging_since;
+    $("ai-scope").textContent = s.ai.scope + (since ? ` Tool-call logging since ${stamp(since)}.` : " Tool-call logging starts with this version of engine-ai.");
+    const t = s.ai.tools;
+    $("ai-tools").innerHTML = t.length ? `<table><thead><tr><th>Tool</th><th class="n">Calls</th><th class="n">Failed</th><th class="n">Avg</th><th class="n">Last</th></tr></thead><tbody>${
+      t.map((x) => `<tr><td class="mono">${esc(x.tool)}</td><td class="n">${x.calls}</td><td class="n" style="${x.failed ? "color:var(--bad)" : ""}">${x.failed}</td><td class="n">${Math.round(x.avg_ms)} ms</td><td class="n" data-ago="${x.last_at}">${ago(x.last_at)}</td></tr>`).join("")
+    }</tbody></table>` : `<div class="empty">No MCP tool calls recorded yet.</div>`;
+  }
+
+  function render(s) {
+    snap = s; lastSync = Date.now() / 1000;
+    $("home").textContent = s.home;
+    renderKpis(s); renderSavings(s); renderRuns(s); renderProfiles(s); renderFeeds(s);
+    tickSync();
+  }
+
+  function tabs(id, set) {
+    $(id).addEventListener("click", (ev) => {
+      const b = ev.target.closest("button"); if (!b) return;
+      $(id).querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      set(b.dataset.f); if (snap) renderFeeds(snap);
+    });
+  }
+  tabs("ai-tabs", (f) => { aiFilter = f; });
+  tabs("ag-tabs", (f) => { agFilter = f; });
+  let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => snap && renderChart(snap), 150); });
+
+  // ------------------------------------------------------------------ transport: SSE, polling fallback
+  let es = null, failures = 0, pollTimer = null;
+  function poll() {
+    fetch("/api/snapshot", { cache: "no-store" }).then((r) => r.json()).then((s) => {
+      if (!snap || s.version !== snap.version) render(s); else lastSync = Date.now() / 1000;
+      setSync("retry", "Polling · synced " + ago(lastSync));
+    }).catch(() => setSync("down", "Offline — is `engine-ai dashboard` running?"));
+  }
+  function connect() {
+    if (!("EventSource" in window)) { pollTimer = setInterval(poll, 3000); poll(); return; }
+    es = new EventSource("/api/stream");
+    es.addEventListener("snapshot", (ev) => {
+      failures = 0; if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      setSync("live", "Live · synced just now");
+      render(JSON.parse(ev.data));
+    });
+    es.addEventListener("heartbeat", (ev) => {
+      failures = 0; lastSync = Date.now() / 1000; setSync("live", "Live · synced just now");
+      const hb = JSON.parse(ev.data);
+      const ban = $("banner"); ban.textContent = hb.error ? "Collector error (showing the last good data): " + hb.error : "";
+      ban.classList.toggle("show", !!hb.error);
+    });
+    es.onopen = () => setSync("live", "Live · connected");
+    es.onerror = () => {
+      failures += 1;
+      setSync("retry", "Reconnecting…");
+      if (failures >= 3 && !pollTimer) { pollTimer = setInterval(poll, 3000); poll(); }  // EventSource keeps retrying too
+    };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

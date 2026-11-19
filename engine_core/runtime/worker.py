@@ -44,6 +44,26 @@ class WorkerOutcome(dict):
     """Structured outcome: status, patch reference, changed files, checks, unresolved."""
 
 
+def _tool_target(call: dict) -> str:
+    """What a tool call acted on (a path or a command), short, for the progress stream —
+    so "what did the agent do" reads `write_file index.html`, not just `write_file`."""
+    raw = (call.get("function") or {}).get("arguments")
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(args, dict):
+        return ""
+    for key in ("path", "command", "cmd", "query"):
+        val = args.get(key)
+        if isinstance(val, list):
+            val = " ".join(map(str, val))
+        if isinstance(val, str) and val.strip():
+            val = " ".join(val.split())
+            return val if len(val) <= 120 else val[:119] + "…"
+    return ""
+
+
 class Worker:
     def __init__(self, provider: Provider, model: str, executor: Executor, store: StateStore,
                  config, profile, usage: UsageJournal | None = None, max_result_chars: int = MAX_RESULT_CHARS,
@@ -118,6 +138,12 @@ class Worker:
                 counts["cost_usd"] += completion.usage.cost_usd
                 if self.usage:
                     self.usage.record(task_id, completion.model, completion.usage)
+                # per-call usage in the live progress stream, so token totals (and the
+                # dashboard) move while a task runs, not only once the report lands
+                self.progress("usage", task=task_id, model=completion.model,
+                              input_tokens=completion.usage.input_tokens,
+                              output_tokens=completion.usage.output_tokens,
+                              cost_usd=completion.usage.cost_usd)
                 messages.append(Message("assistant", completion.content,
                                         tool_calls=list(completion.tool_calls)))
                 if completion.tool_calls:
@@ -134,7 +160,8 @@ class Worker:
                         result = self.executor.execute(call, context={
                             "task_id": task_id, "run_id": self.run_id, "effect_scope": scope,
                             "workspace": getattr(self.executor.policy, "root", None)})
-                        self.progress("tool", task=task_id, tool=name, ok=result.get("ok"))
+                        self.progress("tool", task=task_id, tool=name, ok=result.get("ok"),
+                                      target=_tool_target(call))
                         messages.append(Message("tool", result["content"][:self.max_result_chars],
                                                 tool_call_id=call.get("id")))
                     _ckpt(turn)

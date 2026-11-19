@@ -63,6 +63,7 @@ Usage:
   engine-ai doctor             check prerequisites + connection status
   engine-ai mcp                run the MCP server standalone on stdio (any MCP client can use it)
   engine-ai runtime <cmd>      engine_core runtime CLI (build | resume | build-status | plan | run | status | verify | keys | codex-env | models | profiles --help)
+  engine-ai dashboard          live dashboard: what the AI + agents did, tokens saved (--port, --open)
   engine-ai knowledge sync     clone + ingest the curated engineering repos into the knowledge store
   engine-ai knowledge status   show ingested domains + chunk counts
   engine-ai knowledge agents   regenerate the domain-expert subagents
@@ -101,6 +102,10 @@ switch (cmd) {
     // cwd = the USER's directory, so `--path .`, `./keys.csv` and relative --workspace
     // resolve where they typed the command (RUNTIME_CLI is absolute; it finds its package).
     run("python3", [RUNTIME_CLI, ...process.argv.slice(3)], { cwd: process.cwd() });
+  }
+  case "dashboard": { // live web dashboard over the engine home (local only by default)
+    if (!have("python3")) { console.error("\x1b[31m✗ python3 not found.\x1b[0m"); process.exit(1); }
+    run("python3", [RUNTIME_CLI, "dashboard", ...process.argv.slice(3)], { cwd: process.cwd() });
   }
   case "update": {
     // Published to the npm registry as the scoped package @okoboji/engine-ai

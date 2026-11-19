@@ -6,6 +6,7 @@
                                                        lease + execute ready tasks via a provider
   python3 -m engine_core verify --path DIR -- cmd...   run verification commands → evidence
   python3 -m engine_core build "<objective>"          multi-agent build (plan → workers → verify)
+  python3 -m engine_core dashboard [--port 8765]     live dashboard: AI + agent activity, tokens saved
 
 `connect`/`doctor`/`knowledge` stay in the existing engine-ai CLI (preserved).
 """
@@ -447,6 +448,26 @@ def _git_sha(path: str) -> str | None:
         return None
 
 
+def cmd_dashboard(args) -> int:
+    from engine_core.dashboard.server import serve
+
+    def ready(url, _httpd, hub):
+        print(f"engine-ai dashboard → {url}   (data: {hub.collector.home}; Ctrl-C to stop)", flush=True)
+        if args.host not in ("127.0.0.1", "localhost", "::1"):
+            print(f"! bound to {args.host}: anyone who can reach this address can read your "
+                  "engine-ai activity", file=sys.stderr)
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
+
+    try:
+        return serve(HOME, host=args.host, port=args.port, baseline_model=args.baseline_model,
+                     interval=args.interval, ready=ready)
+    except OSError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="engine-ai runtime", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -537,6 +558,15 @@ def main(argv=None) -> int:
     pp.add_argument("name")
     pp.add_argument("model_id")
     p.set_defaults(fn=cmd_models)
+
+    p = sub.add_parser("dashboard", help="live web dashboard: what the AI + agents did, tokens saved")
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1 — local only)")
+    p.add_argument("--port", type=int, default=8765, help="port (next free one is used if taken)")
+    p.add_argument("--baseline-model", default=None,
+                   help="catalog model id to price 'tokens saved' against (default Claude Sonnet)")
+    p.add_argument("--interval", type=float, default=1.0, help="seconds between change checks")
+    p.add_argument("--open", action="store_true", help="open the dashboard in a browser")
+    p.set_defaults(fn=cmd_dashboard)
 
     args = ap.parse_args(argv)
     try:

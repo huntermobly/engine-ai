@@ -637,6 +637,34 @@ What the engine guarantees (each one has a regression test in `tests/runtime/tes
   `append_file`) — up to 2 times per attempt; if it still fails, the error says the output was
   truncated, so you know to raise `max_output_tokens` or switch model.
 
+### 📊 Live dashboard — what the AI and the agents did, and the tokens saved
+
+```bash
+engine-ai dashboard            # → http://localhost:8765/  (--port N, --open, --baseline-model ID)
+```
+
+A local web page that stays in sync on its own: the server watches `~/.engine-ai` and pushes
+a fresh snapshot over Server-Sent Events whenever anything changes. That includes an agent's
+turn or tool call, a finished task, a memory save, an MCP tool call, or a build process dying.
+Every open tab shows the same version; if the stream drops, the page falls back to polling.
+
+- **What the agents did:** every run with its tasks (profile, model, attempts, turns, the
+  file each tool wrote or the command it ran, tokens, errors). Running tasks show their latest
+  action live. A run whose process died without a report is shown as `crashed`.
+- **What the AI did:** the engine-ai MCP tools the host assistant called (name, ok/failed,
+  duration; never the arguments), the memory it saved, the app sessions it opened and the
+  builds it launched.
+- **Token cost saved:** the tokens the engine's agents processed, priced at a reference
+  model from the cached OpenRouter catalog (default Claude Sonnet), minus what the provider
+  actually charged. Free routes report $0. The page also shows the same tokens priced on
+  Haiku / Sonnet / Opus and on each model's paid route. It is an **estimate**, and the page
+  says so. The host assistant's own tokens are billed by its provider, and engine-ai cannot
+  see them, so they are never counted.
+
+Bound to `127.0.0.1` with a Host-header check; it reads local files only (never the vault).
+Runs recorded before this feature have no per-call usage events, so their tokens come from the
+build's final report (labelled `usage from report`).
+
 ### File ownership and isolation (what is enforced, and its limits)
 
 - `write_file`/`append_file`: only inside the task's `owned_paths` (workspace-relative); `..`,
@@ -808,6 +836,8 @@ SessionStart ──▶ session-start.sh ──▶ "engine-ai is ACTIVE — tools
 | `~/.engine-ai/forge.db` | repo RAG index |
 | `~/.engine-ai/knowledge.db` | 🎓 domain-tagged knowledge (FTS5) for the expert swarm |
 | `~/.engine-ai/sources/<repo>/` | shallow clones of the ingested knowledge repos |
+| `~/.engine-ai/builds-state/<ws>/` | per-workspace build state: `progress.jsonl` (live events incl. per-call token usage), `report.json` |
+| `~/.engine-ai/activity.jsonl` | 📊 MCP tool calls made by the AI (tool, ok, duration; no arguments) — feeds `engine-ai dashboard` |
 
 Nothing is cloud-only — it all runs and persists on your machine.
 
@@ -845,7 +875,9 @@ spans, AES-256-GCM vault, mobile-responsive audit, GitHub/Vercel auth guards, **
 executed checks), the installer (idempotent · preserves malformed settings · clean uninstall), and
 the **engine_core runtime** (providers/limiter/catalog · graph/leases/fencing/worker · worktrees/
 integrator · policy/journal · verifier/evidence — see `tests/providers/`, `tests/runtime/`,
-`tests/workspaces/`). The MCP tool and domain-expert counts in this README are guarded by
+`tests/workspaces/`), and the **live dashboard** (`tests/test_dashboard.py`: token accounting
+against real pipeline runs, no double counting on resume, crash detection, argument-free activity
+log, SSE push on change). The MCP tool and domain-expert counts in this README are guarded by
 `tests/test_readme.py`; test totals are deliberately not quoted here (they change with every fix).
 
 ---
@@ -857,6 +889,7 @@ engine-ai connect            # (re)connect to Claude Code
 engine-ai doctor             # prerequisites + status (vault backend, standalone mode)
 engine-ai mcp                # run the MCP server standalone on stdio (any MCP client)
 engine-ai runtime <cmd>      # engine_core runtime: plan | run | status | verify
+engine-ai dashboard          # live dashboard: AI + agent activity, tokens saved (localhost:8765)
 engine-ai knowledge sync     # clone + ingest the curated engineering repos
 engine-ai knowledge status   # ingested domains + chunk counts
 engine-ai knowledge agents   # regenerate the 30 domain-expert subagents
